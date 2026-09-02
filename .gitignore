@@ -6,3 +6,4 @@ staticfiles/
 .env
 *.log
 canopy-dev-notes.md
+.pytest_cache/
