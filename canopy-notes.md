@@ -1,4 +1,4 @@
-# Canopy — Project Notes
+# Canopy — Project Notes (updated: PostgreSQL)
 
 _Last updated: 2026-09-01_
 
@@ -26,7 +26,7 @@ Think "Obsidian's graph view, but auto-generated from a codebase instead of hand
 | Python-only MVP | Python's built-in `ast` module needs zero extra dependencies — fastest path to a working prototype. |
 | Dash + dash-cytoscape for the graph UI (not React) | Keeps the whole build in Python. `dash-cytoscape` wraps Cytoscape.js and supports the hierarchical layouts + click callbacks needed. |
 | Django as the web framework, via `django-plotly-dash` | Embeds the Dash/dash-cytoscape graph inside a real Django app — Django owns routing/models/auth/admin, Dash owns the interactive graph. Django's ORM/admin gives a working data layer almost for free. |
-| Django ORM (SQLite) instead of a flat-file cache | Natural place to store `Repo`/`CommitAnalysis` rows keyed by commit hash — doubles as the cache. |
+| Django ORM (PostgreSQL) instead of a flat-file cache | Natural place to store `Repo`/`CommitAnalysis` rows keyed by commit hash — doubles as the cache. Postgres over SQLite for a more production-realistic setup and better native JSON field support/indexing for the parsed graph data. |
 | No background job queue / Redis for MVP | Parsing is fast without an LLM in the loop, so it runs synchronously inside a Django view. Revisit only if usage demands async processing. |
 
 ## Tech stack
@@ -34,7 +34,7 @@ Think "Obsidian's graph view, but auto-generated from a codebase instead of hand
 - **Web framework:** Django, with `django-plotly-dash` embedding a Dash app directly inside Django views/templates. One Python codebase, no separate frontend build, no CORS.
 - **Interactive graph:** `dash-cytoscape` (wraps Cytoscape.js) inside the embedded Dash app — hierarchical/dagre-style layouts, Python callbacks for click-to-inspect and expand/collapse.
 - **Parser:** Python's built-in `ast` module (Python-only for the MVP).
-- **Storage:** Django's ORM (SQLite for MVP) — `Repo` / `CommitAnalysis` models, JSON field for the parsed graph.
+- **Storage:** PostgreSQL, accessed via Django's ORM (`psycopg2`/`psycopg`) — `Repo` / `CommitAnalysis` models, JSON field for the parsed graph.
 - **No LLM, no chat, no background job queue for MVP.**
 
 ## Pipeline
