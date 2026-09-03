@@ -1,4 +1,5 @@
 from dash import html, Input, Output
+from django.conf import settings
 from django_plotly_dash import DjangoDash
 from django_plotly_dash.dash_wrapper import PseudoFlask
 
@@ -7,7 +8,7 @@ _original_pseudoflask_init = PseudoFlask.__init__
 
 def _pseudoflask_init_with_secret_key(self):
   _original_pseudoflask_init(self)
-  self.config['SECRET_KEY'] = 'canopy-dev-secret-not-for-production'
+  self.config['SECRET_KEY'] = settings.SECRET_KEY
 
 
 PseudoFlask.__init__ = _pseudoflask_init_with_secret_key
