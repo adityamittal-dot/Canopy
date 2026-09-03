@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Canopy — Analyze a repo</title>
+</head>
+<body>
+    <h1>Canopy</h1>
+    <form method="post">
+        {% csrf_token %}
+        <input type="url" name="url" placeholder="https://github.com/user/repo" value="{{ url|default:'' }}" required>
+        <button type="submit">Analyze</button>
+    </form>
+
+    {% if error %}
+        <p style="color:red">{{ error }}</p>
+    {% endif %}
+
+    {% if analysis %}
+        <p>
+            {% if created %}Analyzed{% else %}Already cached{% endif %}
+            {{ analysis.repo.name }} @ {{ analysis.commit_hash|slice:":7" }}
+            — {{ analysis.graph.nodes|length }} nodes, {{ analysis.graph.edges|length }} edges.
+        </p>
+        {% if not analysis.graph.nodes %}
+            <p>No Python symbols found in this repo (empty, non-Python, or all files failed to parse).</p>
+        {% endif %}
+        {% if analysis.graph.parse_failures %}
+            <p>{{ analysis.graph.parse_failures|length }} file(s) failed to parse:</p>
+            <ul>
+                {% for failure in analysis.graph.parse_failures %}
+                    <li>{{ failure.file }} — {{ failure.error }}</li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+    {% endif %}
+</body>
+</html>

@@ -15,8 +15,13 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
-from django.urls import path
+from django.urls import path, include
+
+from explorer import views as explorer_views
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('django_plotly_dash/', include('django_plotly_dash.urls')),
+    path('dash-test/', explorer_views.dash_test, name='dash_test'),
+    path('analyze/', explorer_views.analyze, name='analyze'),
 ]
