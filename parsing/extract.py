@@ -7,19 +7,32 @@ class Symbol:
     kind: str
     name: str
     file: str
+    docstring: str | None = None
 
 
 class SymbolVisitor(ast.NodeVisitor):
     """Records every class and function definition in a module, including nested ones."""
 
-    def __init__(self, file: str, module_name: str):
+    def __init__(self, file: str, module_name: str, tree: ast.Module):
         self.file = file
-        self.symbols = [Symbol(kind='module', name=module_name, file=file)]
+        self.symbols = [
+            Symbol(
+                kind='module',
+                name=module_name,
+                file=file,
+                docstring=ast.get_docstring(tree),
+            )
+        ]
         self._scope = [module_name]
 
     def _record(self, kind: str, node):
         self.symbols.append(
-            Symbol(kind=kind, name='.'.join(self._scope + [node.name]), file=self.file)
+            Symbol(
+                kind=kind,
+                name='.'.join(self._scope + [node.name]),
+                file=self.file,
+                docstring=ast.get_docstring(node),
+            )
         )
         self._scope.append(node.name)
         self.generic_visit(node)
@@ -35,6 +48,6 @@ class SymbolVisitor(ast.NodeVisitor):
 
 
 def extract_symbols(tree: ast.Module, file: str, module_name: str) -> list[Symbol]:
-    visitor = SymbolVisitor(file, module_name)
+    visitor = SymbolVisitor(file, module_name, tree)
     visitor.visit(tree)
     return visitor.symbols
