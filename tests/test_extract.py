@@ -27,3 +27,15 @@ def test_extract_symbols_records_kinds():
     assert by_name['mod'].kind == 'module'
     assert by_name['mod.Outer'].kind == 'class'
     assert by_name['mod.fetch'].kind == 'function'
+
+
+DOCUMENTED = os.path.join(os.path.dirname(__file__), 'fixtures', 'documented.py')
+
+
+def test_extract_symbols_captures_docstrings():
+    by_name = {s.name: s for s in extract_symbols(parse_file(DOCUMENTED), DOCUMENTED, 'doc')}
+
+    assert by_name['doc'].docstring == 'Module docstring.'
+    assert by_name['doc.Documented'].docstring == 'Class docstring.'
+    assert by_name['doc.Documented.method'].docstring == 'Method docstring.'
+    assert by_name['doc.undocumented'].docstring is None
