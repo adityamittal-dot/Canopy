@@ -39,3 +39,10 @@ def test_extract_symbols_captures_docstrings():
     assert by_name['doc.Documented'].docstring == 'Class docstring.'
     assert by_name['doc.Documented.method'].docstring == 'Method docstring.'
     assert by_name['doc.undocumented'].docstring is None
+
+
+def test_extract_symbols_records_line_ranges():
+    by_name = {s.name: s for s in extract_symbols(parse_file(FIXTURE), FIXTURE, 'mod')}
+
+    top_level = by_name['mod.top_level']
+    assert (top_level.lineno, top_level.end_lineno) == (17, 18)
