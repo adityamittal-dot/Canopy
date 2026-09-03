@@ -1,5 +1,7 @@
 import ast
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from parsing.calls import extract_calls
 
 
 @dataclass
@@ -10,6 +12,7 @@ class Symbol:
     docstring: str | None = None
     lineno: int = 1
     end_lineno: int | None = None
+    calls: list[str] = field(default_factory=list)
 
 
 class SymbolVisitor(ast.NodeVisitor):
@@ -36,6 +39,7 @@ class SymbolVisitor(ast.NodeVisitor):
                 docstring=ast.get_docstring(node),
                 lineno=node.lineno,
                 end_lineno=node.end_lineno,
+                calls=extract_calls(node) if kind == 'function' else [],
             )
         )
         self._scope.append(node.name)
