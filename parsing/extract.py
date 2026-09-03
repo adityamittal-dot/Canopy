@@ -2,6 +2,7 @@ import ast
 from dataclasses import dataclass, field
 
 from parsing.calls import extract_calls
+from parsing.metrics import compute_complexity
 
 
 @dataclass
@@ -13,6 +14,7 @@ class Symbol:
     lineno: int = 1
     end_lineno: int | None = None
     calls: list[str] = field(default_factory=list)
+    complexity: int = 1
 
 
 class SymbolVisitor(ast.NodeVisitor):
@@ -40,6 +42,7 @@ class SymbolVisitor(ast.NodeVisitor):
                 lineno=node.lineno,
                 end_lineno=node.end_lineno,
                 calls=extract_calls(node) if kind == 'function' else [],
+                complexity=compute_complexity(node) if kind == 'function' else 1,
             )
         )
         self._scope.append(node.name)
