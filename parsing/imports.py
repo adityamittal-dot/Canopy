@@ -8,6 +8,9 @@ def extract_imports(tree: ast.Module) -> list[str]:
         if isinstance(node, ast.Import):
             imports += [alias.name for alias in node.names]
         elif isinstance(node, ast.ImportFrom):
-            module = node.module or ''
-            imports += [f'{module}.{alias.name}'.lstrip('.') for alias in node.names]
+            prefix = '.' * node.level + (node.module or '')
+            imports += [
+                f'{prefix}{alias.name}' if not node.module else f'{prefix}.{alias.name}'
+                for alias in node.names
+            ]
     return imports

@@ -9,3 +9,4 @@ def test_analyze_repo_end_to_end():
     assert len(result['nodes']) > 0
     assert all(n['kind'] in ('module', 'class', 'function') for n in result['nodes'])
     assert all('resolved' in e for e in result['edges'])
+    assert len(result['imports']) > 0

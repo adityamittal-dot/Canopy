@@ -3,6 +3,7 @@ import os
 
 from parsing.clone import clone_repo
 from parsing.extract import Symbol, extract_symbols
+from parsing.imports import extract_imports
 from parsing.metrics import compute_fan_in_out, compute_loc
 from parsing.parse import parse_files
 from parsing.resolve import resolve_calls
@@ -28,8 +29,10 @@ def analyze_repo(url: str) -> dict:
     trees, parse_failures = parse_files(find_python_files(repo_root))
 
     symbols = []
+    imports: dict[str, list[str]] = {}
     for file, tree in trees.items():
         symbols += extract_symbols(tree, file, _module_name(file, repo_root))
+        imports[file] = extract_imports(tree)
 
     edges = resolve_calls(build_symbol_table(symbols))
     fan = compute_fan_in_out(edges)
@@ -39,4 +42,5 @@ def analyze_repo(url: str) -> dict:
         'parse_failures': [{'file': f, 'error': str(e)} for f, e in parse_failures],
         'nodes': [_node_dict(s, fan) for s in symbols],
         'edges': [dataclasses.asdict(e) for e in edges],
+        'imports': imports,
     }
