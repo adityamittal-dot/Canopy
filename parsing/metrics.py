@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from parsing.extract import Symbol
+    from parsing.resolve import Edge
 
 
 def compute_loc(symbol: Symbol) -> int:
@@ -45,3 +46,18 @@ def compute_complexity(node: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
     for stmt in node.body:
         visitor.visit(stmt)
     return visitor.complexity
+
+
+def compute_fan_in_out(edges: list[Edge]) -> dict[str, tuple[int, int]]:
+    """Map function qualname -> (fan_in, fan_out), from resolved call-graph edges only."""
+    fan_out: dict[str, set[str]] = {}
+    fan_in: dict[str, set[str]] = {}
+
+    for edge in edges:
+        if not edge.resolved:
+            continue
+        fan_out.setdefault(edge.caller, set()).add(edge.callee)
+        fan_in.setdefault(edge.callee, set()).add(edge.caller)
+
+    names = set(fan_out) | set(fan_in)
+    return {name: (len(fan_in.get(name, ())), len(fan_out.get(name, ()))) for name in names}
