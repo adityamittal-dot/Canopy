@@ -8,6 +8,8 @@ class Symbol:
     name: str
     file: str
     docstring: str | None = None
+    lineno: int = 1
+    end_lineno: int | None = None
 
 
 class SymbolVisitor(ast.NodeVisitor):
@@ -32,6 +34,8 @@ class SymbolVisitor(ast.NodeVisitor):
                 name='.'.join(self._scope + [node.name]),
                 file=self.file,
                 docstring=ast.get_docstring(node),
+                lineno=node.lineno,
+                end_lineno=node.end_lineno,
             )
         )
         self._scope.append(node.name)
