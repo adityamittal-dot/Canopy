@@ -33,3 +33,24 @@ def clone_repo(url: str) -> tuple[str, str]:
   
   commit_hash = result.stdout.strip()
   return dest, commit_hash
+
+
+def get_remote_head_commit(url: str) -> str:
+  """Resolve the HEAD commit hash of `url` without cloning it."""
+  try:
+    result = subprocess.run(
+      ["git", "ls-remote", url, "HEAD"],
+      check=True,
+      capture_output=True,
+      text=True,
+    )
+  except FileNotFoundError as exc:
+    raise CloneError("git is not installed or not on PATH") from exc
+  except subprocess.CalledProcessError as exc:
+    raise CloneError(f"failed to reach {url}: {exc.stderr.strip()}") from exc
+
+  line = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
+  if not line:
+    raise CloneError(f"no HEAD ref found for {url} (empty repo or wrong URL)")
+
+  return line.split()[0]
