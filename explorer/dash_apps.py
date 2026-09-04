@@ -5,6 +5,7 @@ import dash
 from dash import dcc, html, Input, Output, State
 from django.conf import settings
 from django.templatetags.static import static
+from django.urls import reverse
 from django_plotly_dash import DjangoDash
 from django_plotly_dash.dash_wrapper import PseudoFlask
 
@@ -145,7 +146,7 @@ def render_header(elements, repo_meta):
   edge_count = sum(1 for el in elements if el['data'].get('kind') == 'call')
 
   header = html.Div(className='cy-header', children=[
-    html.A(href='/', className='cy-header__logo', children=[
+    html.A(href=reverse('analyze'), className='cy-header__logo', children=[
       html.Span(className='cy-header__logo-dot'),
       html.Span('canopy', className='cy-header__wordmark'),
       html.Span('/ survey', className='cy-header__subpath'),
