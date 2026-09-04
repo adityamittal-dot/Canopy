@@ -32,7 +32,15 @@ DEBUG = os.environ.get('DJANGO_DEBUG', 'False') == 'True'
 
 ALLOWED_HOSTS = [h.strip() for h in os.environ.get('DJANGO_ALLOWED_HOSTS', '').split(',') if h.strip()]
 
-CSRF_TRUSTED_ORIGINS = [o.strip() for o in os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',') if o.strip()]
+_csrf_trusted_env = os.environ.get('CSRF_TRUSTED_ORIGINS', '')
+if _csrf_trusted_env:
+    CSRF_TRUSTED_ORIGINS = [o.strip() for o in _csrf_trusted_env.split(',') if o.strip()]
+else:
+    # Most PaaS hosts (Render, Railway) can hand your own assigned hostname
+    # back to you as an env var, but not a "with https:// scheme" variant
+    # CSRF_TRUSTED_ORIGINS needs - derive it from ALLOWED_HOSTS instead of
+    # requiring a second, redundant env var to be set by hand.
+    CSRF_TRUSTED_ORIGINS = [f'https://{h}' for h in ALLOWED_HOSTS]
 
 if not DEBUG:
     # Railway (and most PaaS hosts) terminate TLS at a proxy in front of the
