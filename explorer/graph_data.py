@@ -13,9 +13,7 @@ segment off its qualified name) has already been assigned an element id by
 the time that node is processed.
 """
 
-
-def _label(qualified_name: str) -> str:
-    return qualified_name.rsplit('.', 1)[-1]
+from parsing.resolve import _bare_name as _label
 
 
 def build_elements(graph: dict, repo_label: str = 'repo') -> list[dict]:
@@ -24,11 +22,23 @@ def build_elements(graph: dict, repo_label: str = 'repo') -> list[dict]:
     Every node's `data` carries `depth` (repo=0) and `parent` (omitted only
     for the repo root), so a caller can render progressively by filtering on
     depth and/or on which parents have been "expanded".
+
+    Two symbols can share the same fully-qualified name (e.g. a @property
+    getter/setter/deleter, all named Class.x) - parsing.extract doesn't
+    merge these, so the id for the second (and any later) occurrence is
+    disambiguated with a `#2`, `#3`, ... suffix rather than colliding with
+    the first, which Cytoscape requires to have a unique id.
     """
     elements = [{'data': {'id': 'repo', 'label': repo_label, 'kind': 'repo', 'depth': 0}}]
     depth_by_id = {'repo': 0}
     package_id_by_prefix: dict[str, str] = {}
     id_by_symbol_name: dict[str, str] = {}
+    occurrences_by_id: dict[str, int] = {}
+
+    def make_unique_id(candidate_id: str) -> str:
+        count = occurrences_by_id.get(candidate_id, 0) + 1
+        occurrences_by_id[candidate_id] = count
+        return candidate_id if count == 1 else f'{candidate_id}#{count}'
 
     def ensure_package_chain(package_parts: list[str]) -> str:
         parent_id = 'repo'
@@ -58,7 +68,7 @@ def build_elements(graph: dict, repo_label: str = 'repo') -> list[dict]:
         if kind == 'module':
             parts = name.split('.')
             parent_id = ensure_package_chain(parts[:-1])
-            node_id = f'mod:{name}'
+            node_id = make_unique_id(f'mod:{name}')
         else:
             parent_name = name.rsplit('.', 1)[0]
             parent_id = id_by_symbol_name.get(parent_name)
@@ -67,7 +77,7 @@ def build_elements(graph: dict, repo_label: str = 'repo') -> list[dict]:
                 # module docstring) - this should be unreachable. Fail loudly
                 # rather than silently attaching the node to the wrong parent.
                 raise ValueError(f'no parent found for {kind} {name!r}')
-            node_id = f'sym:{name}'
+            node_id = make_unique_id(f'sym:{name}')
 
         depth_by_id[node_id] = depth_by_id[parent_id] + 1
         id_by_symbol_name[name] = node_id
@@ -110,3 +120,17 @@ def build_elements(graph: dict, repo_label: str = 'repo') -> list[dict]:
 def children_of(elements: list[dict], parent_id: str) -> list[dict]:
     """Direct child nodes of `parent_id` (edges have no parent, so never match)."""
     return [el for el in elements if el['data'].get('parent') == parent_id]
+
+
+def index_children(elements: list[dict]) -> dict[str, list[dict]]:
+    """Map parent id -> list of its direct child nodes, built in one pass.
+
+    Use this instead of repeated `children_of` calls when checking children
+    for more than one parent at a time (e.g. every currently-expanded node).
+    """
+    index: dict[str, list[dict]] = {}
+    for el in elements:
+        parent_id = el['data'].get('parent')
+        if parent_id is not None:
+            index.setdefault(parent_id, []).append(el)
+    return index

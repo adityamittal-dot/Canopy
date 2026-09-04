@@ -1,4 +1,4 @@
-from explorer.graph_data import build_elements, children_of
+from explorer.graph_data import build_elements, children_of, index_children
 
 
 def _by_id(elements, element_id):
@@ -177,3 +177,43 @@ def test_children_of_returns_only_direct_children():
 
     widget_children = children_of(elements, 'sym:mod.Widget')
     assert [c['data']['id'] for c in widget_children] == ['sym:mod.Widget.render']
+
+
+def test_index_children_matches_children_of_for_every_parent():
+    graph = _make_graph([
+        {'kind': 'module', 'name': 'mod', 'file': 'mod.py'},
+        {'kind': 'class', 'name': 'mod.Widget', 'file': 'mod.py'},
+        {'kind': 'function', 'name': 'mod.Widget.render', 'file': 'mod.py'},
+        {'kind': 'function', 'name': 'mod.top_level', 'file': 'mod.py'},
+    ])
+
+    elements = build_elements(graph)
+    index = index_children(elements)
+
+    for el in elements:
+        parent_id = el['data']['id']
+        assert index.get(parent_id, []) == children_of(elements, parent_id)
+
+
+def test_same_named_symbols_like_a_property_getter_and_setter_get_distinct_ids():
+    # parsing.extract does not merge @property getter/setter/deleter pairs -
+    # both are recorded as separate `function` symbols named `mod.Widget.x`.
+    graph = _make_graph([
+        {'kind': 'module', 'name': 'mod', 'file': 'mod.py'},
+        {'kind': 'class', 'name': 'mod.Widget', 'file': 'mod.py'},
+        {'kind': 'function', 'name': 'mod.Widget.x', 'file': 'mod.py', 'lineno': 2},
+        {'kind': 'function', 'name': 'mod.Widget.x', 'file': 'mod.py', 'lineno': 6},
+    ])
+
+    elements = build_elements(graph)
+
+    x_elements = [el for el in elements if el['data']['label'] == 'x']
+    assert len(x_elements) == 2
+
+    ids = {el['data']['id'] for el in x_elements}
+    assert len(ids) == 2  # unique - Cytoscape requires distinct element ids
+    assert 'sym:mod.Widget.x' in ids
+    assert 'sym:mod.Widget.x#2' in ids
+
+    linenos = {el['data']['lineno'] for el in x_elements}
+    assert linenos == {2, 6}  # both occurrences kept, neither dropped

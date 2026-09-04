@@ -5,7 +5,7 @@ from django.conf import settings
 from django_plotly_dash import DjangoDash
 from django_plotly_dash.dash_wrapper import PseudoFlask
 
-from explorer.graph_data import build_elements, children_of
+from explorer.graph_data import build_elements, children_of, index_children
 from explorer.models import CommitAnalysis
 
 _original_pseudoflask_init = PseudoFlask.__init__
@@ -36,7 +36,12 @@ def update_output(n_clicks):
   return f'Button clicked {n_clicks} time(s) - Dash is alive inside Django.'
 
 
-DEFAULT_MAX_DEPTH = 2
+# Hidden by default regardless of how deep a repo's package nesting goes -
+# 'function' is the only kind whose visibility depends on the *kind* of its
+# ancestors, not on raw graph depth (which would otherwise make a module's
+# classes show or hide by default purely based on how many packages it
+# happens to be nested under).
+DEFAULT_HIDDEN_KINDS = {'function'}
 
 graph_app = DjangoDash('RepoGraph')
 
@@ -115,10 +120,12 @@ def render_visible_elements(elements, expanded, show_calls_value):
   visible_ids = {
     el['data']['id']
     for el in elements
-    if el['data'].get('kind') != 'call' and el['data'].get('depth', 0) <= DEFAULT_MAX_DEPTH
+    if el['data'].get('kind') not in DEFAULT_HIDDEN_KINDS | {'call'}
   }
+
+  children_by_parent = index_children(elements)
   for parent_id in expanded:
-    visible_ids |= {c['data']['id'] for c in children_of(elements, parent_id)}
+    visible_ids |= {c['data']['id'] for c in children_by_parent.get(parent_id, [])}
 
   visible = [el for el in elements if el['data'].get('kind') != 'call' and el['data']['id'] in visible_ids]
 
