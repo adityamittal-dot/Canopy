@@ -125,14 +125,11 @@ def render_visible_elements(elements, expanded, show_calls_value):
   # be visible. Only childless ("leaf") functions are hidden by default.
   children_by_parent = index_children(elements)
 
-  hidden_ids: set[str] = set()
-  for el in elements:
-    data = el['data']
-    if data.get('kind') == 'call':
-      continue
-    is_leaf_function = data.get('kind') in DEFAULT_HIDDEN_KINDS and not children_by_parent.get(data['id'])
-    if is_leaf_function or data.get('parent') in hidden_ids:
-      hidden_ids.add(data['id'])
+  hidden_ids = {
+    el['data']['id']
+    for el in elements
+    if el['data'].get('kind') in DEFAULT_HIDDEN_KINDS and not children_by_parent.get(el['data']['id'])
+  }
 
   visible_ids = {
     el['data']['id']

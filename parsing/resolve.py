@@ -10,7 +10,7 @@ class Edge:
     resolved: bool
 
 
-def _bare_name(qualified_or_call: str) -> str:
+def bare_name(qualified_or_call: str) -> str:
     return qualified_or_call.rsplit('.', 1)[-1]
 
 
@@ -35,12 +35,12 @@ def resolve_calls(table: dict[str, Symbol]) -> list[Edge]:
     functions = [s for s in table.values() if s.kind == 'function']
     by_bare_name: dict[str, list[Symbol]] = {}
     for func in functions:
-        by_bare_name.setdefault(_bare_name(func.name), []).append(func)
+        by_bare_name.setdefault(bare_name(func.name), []).append(func)
 
     edges = []
     for caller in functions:
         for call in caller.calls:
-            candidates = by_bare_name.get(_bare_name(call), [])
+            candidates = by_bare_name.get(bare_name(call), [])
             same_file = [c for c in candidates if c.file == caller.file]
             if same_file:
                 match = same_file[0]
