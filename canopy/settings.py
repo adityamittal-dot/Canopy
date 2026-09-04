@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 import os
 
 from pathlib import Path
+from urllib.parse import urlparse
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -21,12 +22,29 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-5br+#l%_b1mj3t(jnm0aaf8mc!h@k+r&4x3f=&0mfy#3wtfqex'
+# The fallback is only ever hit locally (docker-compose / manage.py runserver
+# don't set SECRET_KEY) - a real deploy must set the env var, since this
+# committed value is public.
+SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-5br+#l%_b1mj3t(jnm0aaf8mc!h@k+r&4x3f=&0mfy#3wtfqex')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ.get('DJANGO_DEBUG', 'False') == 'True'
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = [h.strip() for h in os.environ.get('DJANGO_ALLOWED_HOSTS', '').split(',') if h.strip()]
+
+CSRF_TRUSTED_ORIGINS = [o.strip() for o in os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',') if o.strip()]
+
+if not DEBUG:
+    # Railway (and most PaaS hosts) terminate TLS at a proxy in front of the
+    # app and forward plain HTTP, so Django needs to be told which header
+    # carries the original scheme - otherwise SECURE_SSL_REDIRECT loops.
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
 
 
 # Application definition
@@ -49,6 +67,9 @@ MIDDLEWARE = [
     # mostly repeated key names, so they compress very well.
     'django.middleware.gzip.GZipMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    # Directly after SecurityMiddleware per WhiteNoise's own docs - serves
+    # STATIC_ROOT itself, so no separate static file host/CDN is needed.
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -81,16 +102,34 @@ WSGI_APPLICATION = 'canopy.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.environ.get('DB_NAME', 'canopy'),
-        'USER': os.environ.get('DB_USER', 'canopy'),
-        'PASSWORD': os.environ.get('DB_PASSWORD', 'canopy'),
-        'HOST': os.environ.get('DB_HOST', 'localhost'),
-        'PORT': os.environ.get('DB_PORT', '5432'),
+# Railway's Postgres plugin (like most managed-Postgres hosts) injects one
+# DATABASE_URL connection string rather than the split DB_* vars docker-
+# compose uses locally - support both instead of adding a dependency just
+# to parse a URL that's a few lines of stdlib urlparse.
+_database_url = os.environ.get('DATABASE_URL')
+if _database_url:
+    _db = urlparse(_database_url)
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': _db.path.lstrip('/'),
+            'USER': _db.username,
+            'PASSWORD': _db.password,
+            'HOST': _db.hostname,
+            'PORT': _db.port or 5432,
+        }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.environ.get('DB_NAME', 'canopy'),
+            'USER': os.environ.get('DB_USER', 'canopy'),
+            'PASSWORD': os.environ.get('DB_PASSWORD', 'canopy'),
+            'HOST': os.environ.get('DB_HOST', 'localhost'),
+            'PORT': os.environ.get('DB_PORT', '5432'),
+        }
+    }
 
 # Password validation
 # https://docs.djangoproject.com/en/6.1/ref/settings/#auth-password-validators
@@ -127,6 +166,25 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        # The manifest-backed WhiteNoise storage requires collectstatic to
+        # have already run (it looks up hashed filenames from a manifest
+        # file) - fine for a built Docker image, but breaks local runserver
+        # and the test suite (both import static('explorer/canopy.css') at
+        # module load, before anyone's run collectstatic) if used
+        # unconditionally.
+        'BACKEND': (
+            'django.contrib.staticfiles.storage.StaticFilesStorage' if DEBUG
+            else 'canopy.storage.DashSafeManifestStaticFilesStorage'
+        ),
+    },
+}
 
 STATICFILES_FINDERS = [
     'django.contrib.staticfiles.finders.FileSystemFinder',
