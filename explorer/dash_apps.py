@@ -6,7 +6,9 @@ from django_plotly_dash import DjangoDash
 from django_plotly_dash.dash_wrapper import PseudoFlask
 
 from explorer.github_links import fetch_source_snippet, github_blob_url
-from explorer.graph_data import ancestors_of, build_elements, callers_and_callees, children_of, index_children
+from explorer.graph_data import (
+  ancestors_of, build_elements, callers_and_callees, children_of, index_children, noise_ids,
+)
 from explorer.models import CommitAnalysis
 
 _original_pseudoflask_init = PseudoFlask.__init__
@@ -52,11 +54,22 @@ graph_app.layout = html.Div([
   dcc.Store(id='expanded-store', data=[]),
   dcc.Store(id='repo-meta-store', data={}),
   dcc.Store(id='selected-node-store', data=None),
+  dcc.Store(id='search-target-store', data=None),
   dcc.Checklist(
     id='show-calls',
     options=[{'label': ' Show call edges', 'value': 'show'}],
     value=[],
   ),
+  dcc.Checklist(
+    id='hide-noise',
+    options=[{'label': ' Hide tests & vendored deps', 'value': 'hide'}],
+    value=['hide'],
+  ),
+  html.Div([
+    dcc.Input(id='search-input', type='text', placeholder='Search by name...', debounce=False),
+    html.Button('Search', id='search-button', n_clicks=0),
+    html.Span(id='search-status'),
+  ]),
   html.Div(id='graph-status'),
   html.Div([
     html.Div(
@@ -146,7 +159,24 @@ def _compute_navigation_update(target_id, expanded, elements):
   if children_of(elements, target_id):
     to_reveal = to_reveal + [target_id]
 
-  needed = [node_id for node_id in to_reveal if node_id not in expanded]
+  # Cross-cutting "who calls this, anywhere in the repo": reveal the
+  # selected node's own callers/callees too, wherever they live in the
+  # tree, so the connection is visible on the canvas immediately rather
+  # than requiring a further click through each "Called by"/"Calls" button.
+  callers, callees = callers_and_callees(elements, target_id)
+  for connected_id in callers + callees:
+    to_reveal = to_reveal + ancestors_of(elements, connected_id)
+
+  # to_reveal can contain duplicates (e.g. two callees sharing an ancestor
+  # package) - dedupe here rather than letting them accumulate into
+  # expanded across repeated navigations.
+  seen = set(expanded)
+  needed = []
+  for node_id in to_reveal:
+    if node_id not in seen:
+      needed.append(node_id)
+      seen.add(node_id)
+
   if not needed:
     return None, target_id
   return expanded + needed, target_id
@@ -173,13 +203,82 @@ def navigate(tapped, _nav_clicks, expanded, elements, currently_selected):
   return (new_expanded if new_expanded is not None else dash.no_update), selected_id
 
 
+def _resolve_search_target(query, elements, excluded_ids):
+  """Case-insensitive substring match against label and qualified name,
+  restricted to module/class/function nodes. `excluded_ids` is meant to be
+  the current noise-filter set when "hide noise" is on - a match there
+  wouldn't actually become visible via reveal (render_visible_elements
+  hides noise regardless of expansion state), so it's excluded from
+  results entirely rather than "found" but silently invisible. A
+  default-hidden leaf function is NOT excluded - unlike noise, that's
+  just a collapsed-by-default node, fully revealable like any other.
+
+  Returns (target_id_or_None, status_message). An exact label match wins;
+  otherwise the shortest qualified name among substring matches (a
+  reasonable proxy for "most specific/relevant" - e.g. searching "add"
+  should prefer `pkg.add` over `pkg.subpkg.mod.add_all_things`).
+  """
+  query = (query or '').strip()
+  if not query:
+    return None, 'Enter a search term.'
+
+  query_lower = query.lower()
+  candidates = [
+    el for el in elements
+    if el['data'].get('kind') in ('module', 'class', 'function')
+    and el['data']['id'] not in excluded_ids
+    and (query_lower in el['data']['label'].lower() or query_lower in el['data'].get('name', '').lower())
+  ]
+
+  if not candidates:
+    return None, f'No match for "{query}".'
+
+  exact = [el for el in candidates if el['data']['label'].lower() == query_lower]
+  best = exact[0] if exact else min(candidates, key=lambda el: len(el['data'].get('name') or el['data']['label']))
+
+  suffix = f' ({len(candidates) - 1} other match(es))' if len(candidates) > 1 else ''
+  return best['data']['id'], f'Found {best["data"].get("name", best["data"]["label"])}{suffix}.'
+
+
+@graph_app.callback(
+  Output('search-target-store', 'data'),
+  Output('search-status', 'children'),
+  Input('search-button', 'n_clicks'),
+  Input('search-input', 'n_submit'),
+  State('search-input', 'value'),
+  State('elements-store', 'data'),
+  State('hide-noise', 'value'),
+  prevent_initial_call=True,
+)
+def search_for_node(_n_clicks, _n_submit, query, elements, hide_noise_value):
+  excluded_ids = noise_ids(elements) if 'hide' in (hide_noise_value or []) else set()
+  target_id, message = _resolve_search_target(query, elements, excluded_ids)
+  return target_id, message
+
+
+@graph_app.callback(
+  Output('expanded-store', 'data', allow_duplicate=True),
+  Output('selected-node-store', 'data', allow_duplicate=True),
+  Input('search-target-store', 'data'),
+  State('expanded-store', 'data'),
+  State('elements-store', 'data'),
+  prevent_initial_call=True,
+)
+def reveal_search_target(target_id, expanded, elements):
+  if target_id is None:
+    return dash.no_update, dash.no_update
+  new_expanded, selected_id = _compute_navigation_update(target_id, expanded, elements)
+  return (new_expanded if new_expanded is not None else dash.no_update), selected_id
+
+
 @graph_app.callback(
   Output('repo-graph', 'elements'),
   Input('elements-store', 'data'),
   Input('expanded-store', 'data'),
   Input('show-calls', 'value'),
+  Input('hide-noise', 'value'),
 )
-def render_visible_elements(elements, expanded, show_calls_value):
+def render_visible_elements(elements, expanded, show_calls_value, hide_noise_value):
   # children_by_parent is needed unconditionally, not just when something is
   # expanded: a function that itself contains a nested class/function (a
   # locally-defined class, or a nested def) is a container, not a leaf, and
@@ -188,20 +287,29 @@ def render_visible_elements(elements, expanded, show_calls_value):
   # be visible. Only childless ("leaf") functions are hidden by default.
   children_by_parent = index_children(elements)
 
-  hidden_ids = {
+  # Two different kinds of "hidden", kept separate on purpose: a default-
+  # hidden leaf function is meant to be revealed by expanding its parent
+  # (that's the collapsed-by-default browsing model), but a noise-filtered
+  # node (test/vendor code) must stay hidden regardless of expansion state
+  # - it's "not part of this view" rather than "collapsed for now".
+  default_hidden_ids = {
     el['data']['id']
     for el in elements
     if el['data'].get('kind') in DEFAULT_HIDDEN_KINDS and not children_by_parent.get(el['data']['id'])
   }
+  noise = noise_ids(elements) if 'hide' in (hide_noise_value or []) else set()
 
   visible_ids = {
     el['data']['id']
     for el in elements
-    if el['data'].get('kind') != 'call' and el['data']['id'] not in hidden_ids
+    if el['data'].get('kind') != 'call' and el['data']['id'] not in default_hidden_ids and el['data']['id'] not in noise
   }
 
   for parent_id in expanded:
-    visible_ids |= {c['data']['id'] for c in children_by_parent.get(parent_id, [])}
+    if parent_id in noise:
+      # e.g. expanded before "hide noise" was toggled on - stays hidden.
+      continue
+    visible_ids |= {c['data']['id'] for c in children_by_parent.get(parent_id, []) if c['data']['id'] not in noise}
 
   visible = [el for el in elements if el['data'].get('kind') != 'call' and el['data']['id'] in visible_ids]
 
@@ -234,10 +342,11 @@ def _nav_button(role, target_id, elements):
 @graph_app.callback(
   Output('detail-panel', 'children'),
   Input('selected-node-store', 'data'),
+  Input('hide-noise', 'value'),
   State('elements-store', 'data'),
   State('repo-meta-store', 'data'),
 )
-def render_detail_panel(selected_id, elements, repo_meta):
+def render_detail_panel(selected_id, hide_noise_value, elements, repo_meta):
   if not selected_id:
     return 'Click a node to see its details.'
 
@@ -272,7 +381,16 @@ def render_detail_panel(selected_id, elements, repo_meta):
     if blob_url:
       rows.append(html.A('View on GitHub', href=blob_url, target='_blank'))
 
+  # Excluding noise-side callers/callees when the filter is on for the same
+  # reason search does: a button pointing at a noise node would update the
+  # selection but the graph would never actually show it (render_visible_
+  # elements hides noise regardless of expansion state) - showing it here
+  # would silently do nothing when clicked.
+  noise = noise_ids(elements) if 'hide' in (hide_noise_value or []) else set()
   callers, callees = callers_and_callees(elements, selected_id)
+  callers = [c for c in callers if c not in noise]
+  callees = [c for c in callees if c not in noise]
+
   if callers:
     rows.append(html.P('Called by:'))
     rows.append(html.Div([_nav_button('caller', c, elements) for c in callers]))
