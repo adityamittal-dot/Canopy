@@ -16,10 +16,13 @@ def _module_name(file: str, repo_root: str) -> str:
     return rel.replace(os.sep, '.')
 
 
-def _node_dict(symbol: Symbol, fan: dict[str, tuple[int, int]]) -> dict:
+def _node_dict(symbol: Symbol, fan: dict[str, tuple[int, int]], repo_root: str) -> dict:
     node = dataclasses.asdict(symbol)
     node['loc'] = compute_loc(symbol)
     node['fan_in'], node['fan_out'] = fan.get(symbol.name, (0, 0))
+    # Forward-slashed regardless of OS, since this is meant for building
+    # GitHub URLs (and other web-facing links), not local filesystem access.
+    node['relative_path'] = os.path.relpath(symbol.file, repo_root).replace(os.sep, '/')
     return node
 
 
@@ -40,7 +43,7 @@ def analyze_repo(url: str) -> dict:
     return {
         'commit_hash': commit_hash,
         'parse_failures': [{'file': f, 'error': str(e)} for f, e in parse_failures],
-        'nodes': [_node_dict(s, fan) for s in symbols],
+        'nodes': [_node_dict(s, fan, repo_root) for s in symbols],
         'edges': [dataclasses.asdict(e) for e in edges],
         'imports': imports,
     }

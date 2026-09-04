@@ -88,7 +88,8 @@ def build_elements(graph: dict, repo_label: str = 'repo') -> list[dict]:
             'kind': kind,
             'parent': parent_id,
             'depth': depth_by_id[node_id],
-            'file': node.get('file'),
+            'name': name,
+            'relative_path': node.get('relative_path'),
             'docstring': node.get('docstring'),
             'lineno': node.get('lineno'),
             'end_lineno': node.get('end_lineno'),
@@ -134,3 +135,32 @@ def index_children(elements: list[dict]) -> dict[str, list[dict]]:
         if parent_id is not None:
             index.setdefault(parent_id, []).append(el)
     return index
+
+
+def ancestors_of(elements: list[dict], node_id: str) -> list[str]:
+    """Ids of `node_id`'s ancestors, immediate parent first, up to (but not
+    including) the repo root. Used to reveal a node that isn't currently
+    visible - expanding every id this returns makes `node_id` visible."""
+    parent_by_id = {el['data']['id']: el['data'].get('parent') for el in elements if el['data'].get('kind') != 'call'}
+
+    ancestors = []
+    parent_id = parent_by_id.get(node_id)
+    while parent_id is not None and parent_id != 'repo':
+        ancestors.append(parent_id)
+        parent_id = parent_by_id.get(parent_id)
+    return ancestors
+
+
+def callers_and_callees(elements: list[dict], node_id: str) -> tuple[list[str], list[str]]:
+    """Ids of every node with a resolved call edge into/out of `node_id`."""
+    callers = []
+    callees = []
+    for el in elements:
+        data = el['data']
+        if data.get('kind') != 'call':
+            continue
+        if data['target'] == node_id:
+            callers.append(data['source'])
+        if data['source'] == node_id:
+            callees.append(data['target'])
+    return callers, callees
