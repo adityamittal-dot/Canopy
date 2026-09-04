@@ -1,0 +1,229 @@
+/* Canopy landing page - same design tokens as explorer/static/explorer/canopy.css,
+   duplicated deliberately: this page is a separate plain-Django template
+   from the Dash-rendered explorer, styled independently. */
+
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+:root {
+  --cy-background: oklch(15.5% .014 265);
+  --cy-ink: oklch(15.5% .014 265);
+  --cy-panel: oklch(20.8% .014 265);
+  --cy-line: oklch(34% .012 265);
+  --cy-fg: oklch(91.7% .008 265);
+  --cy-mutedfg: oklch(63.2% .017 265);
+  --cy-faint: oklch(47.8% .017 265);
+  --cy-accent: oklch(78.5% .176 162);
+  --cy-radius: .375rem;
+  --cy-font-ui: 'JetBrains Mono', ui-monospace, monospace;
+  --cy-font-code: 'IBM Plex Mono', ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background-color: var(--cy-background);
+  background-image:
+    radial-gradient(ellipse 900px 500px at 0% 0%, color-mix(in oklch, var(--cy-accent) 10%, transparent), transparent 70%),
+    radial-gradient(circle, color-mix(in oklch, var(--cy-line) 60%, transparent) 1px, transparent 1px);
+  background-size: auto, 22px 22px;
+  color: var(--cy-fg);
+  font-family: var(--cy-font-ui);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+a { color: inherit; text-decoration: none; }
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  height: 48px;
+  border-bottom: 1px solid var(--cy-line);
+  padding: 0 1.5rem;
+}
+
+header .logo {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  font-size: 13px;
+}
+
+header .logo-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--cy-accent);
+  display: inline-block;
+}
+
+header .wordmark {
+  font-family: var(--cy-font-code);
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+
+header .subpath { font-size: 11px; color: var(--cy-faint); }
+
+header .badges {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  font-size: 11px;
+  color: var(--cy-mutedfg);
+}
+
+header .vdivider { width: 1px; height: .75rem; background: var(--cy-line); margin: 0 .25rem; display: inline-block; }
+
+main {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 5.5rem 1.5rem 4rem;
+}
+
+h1 {
+  font-family: var(--cy-font-ui);
+  font-weight: 700;
+  font-size: 2rem;
+  line-height: 1.25;
+  margin: 0 0 1.25rem;
+  text-wrap: balance;
+}
+
+.lede {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--cy-mutedfg);
+  margin: 0 0 2.25rem;
+  max-width: 62ch;
+}
+
+.lede code, .lede strong {
+  color: var(--cy-fg);
+  font-weight: 600;
+  font-style: normal;
+}
+
+.field-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .15em;
+  color: var(--cy-faint);
+  margin: 0 0 .5rem;
+}
+
+form.analyze-form {
+  display: flex;
+  gap: .75rem;
+}
+
+.url-box {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  height: 40px;
+  border-radius: .25rem;
+  border: 1px solid var(--cy-line);
+  background: var(--cy-panel);
+  padding: 0 .85rem;
+}
+
+.url-box:focus-within { border-color: color-mix(in oklch, var(--cy-accent) 60%, transparent); }
+
+.url-box .prefix { color: var(--cy-faint); }
+
+.url-box input {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--cy-fg);
+  font-family: var(--cy-font-ui);
+  font-size: 13px;
+}
+
+.url-box input::placeholder { color: var(--cy-faint); }
+
+button.analyze {
+  height: 40px;
+  padding: 0 1.5rem;
+  border-radius: .25rem;
+  border: 1px solid color-mix(in oklch, var(--cy-accent) 50%, transparent);
+  background: color-mix(in oklch, var(--cy-accent) 15%, transparent);
+  color: var(--cy-accent);
+  font-family: var(--cy-font-ui);
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+button.analyze:hover { background: color-mix(in oklch, var(--cy-accent) 25%, transparent); }
+
+.error-banner {
+  margin-top: 1rem;
+  padding: .75rem 1rem;
+  border-radius: var(--cy-radius);
+  border: 1px solid color-mix(in oklch, oklch(70% .18 25) 45%, transparent);
+  background: color-mix(in oklch, oklch(70% .18 25) 12%, transparent);
+  color: oklch(80% .12 25);
+  font-size: 12px;
+}
+
+.result-bar {
+  margin-top: 1rem;
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  padding: .75rem 1rem;
+  border-radius: var(--cy-radius);
+  border: 1px solid color-mix(in oklch, var(--cy-accent) 40%, transparent);
+  background: color-mix(in oklch, var(--cy-accent) 10%, transparent);
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.result-bar .accent { color: var(--cy-accent); font-weight: 600; }
+.result-bar .muted { color: var(--cy-mutedfg); }
+.result-bar a {
+  margin-left: auto;
+  color: var(--cy-accent);
+  font-weight: 600;
+}
+.result-bar a:hover { text-decoration: underline; }
+
+.warnings {
+  margin-top: .5rem;
+  font-size: 11px;
+  color: var(--cy-faint);
+}
+
+hr.divider {
+  border: none;
+  border-top: 1px solid var(--cy-line);
+  margin: 2.5rem 0 2rem;
+}
+
+.features {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1.5rem;
+}
+
+.features h3 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cy-fg);
+  margin: 0 0 .4rem;
+}
+
+.features p {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--cy-faint);
+  margin: 0;
+}
