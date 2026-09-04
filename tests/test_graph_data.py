@@ -1,4 +1,7 @@
-from explorer.graph_data import ancestors_of, build_elements, callers_and_callees, children_of, index_children, noise_ids
+from explorer.graph_data import (
+    ancestors_of, build_elements, callers_and_callees, children_of, index_children, noise_ids_for_tests,
+    subtree_node_count, vendor_noise_ids,
+)
 
 
 def _by_id(elements, element_id):
@@ -280,17 +283,18 @@ def test_callers_and_callees_reads_off_the_call_edges():
     assert no_callees == ['sym:mod.b']
 
 
-def test_noise_ids_is_empty_for_a_repo_with_no_test_or_vendor_code():
+def test_test_noise_ids_is_empty_for_a_repo_with_no_test_code():
     graph = _make_graph([
         {'kind': 'module', 'name': 'pkg.mod', 'file': 'pkg/mod.py', 'relative_path': 'pkg/mod.py'},
         {'kind': 'function', 'name': 'pkg.mod.f', 'file': 'pkg/mod.py', 'relative_path': 'pkg/mod.py'},
     ])
     elements = build_elements(graph)
 
-    assert noise_ids(elements) == set()
+    assert noise_ids_for_tests(elements) == set()
+    assert vendor_noise_ids(elements) == set()
 
 
-def test_noise_ids_marks_a_tests_package_and_everything_under_it():
+def test_test_noise_ids_marks_a_tests_package_and_everything_under_it():
     graph = _make_graph([
         {'kind': 'module', 'name': 'tests.test_widget', 'file': 'tests/test_widget.py',
          'relative_path': 'tests/test_widget.py'},
@@ -300,15 +304,16 @@ def test_noise_ids_marks_a_tests_package_and_everything_under_it():
     ])
     elements = build_elements(graph)
 
-    noise = noise_ids(elements)
+    noise = noise_ids_for_tests(elements)
     assert 'pkg:tests' in noise
     assert 'mod:tests.test_widget' in noise
     assert 'sym:tests.test_widget.test_it_works' in noise
     assert 'mod:pkg.mod' not in noise
     assert 'pkg:pkg' not in noise
+    assert vendor_noise_ids(elements) == set()
 
 
-def test_noise_ids_marks_a_test_module_outside_a_tests_package():
+def test_test_noise_ids_marks_a_test_module_outside_a_tests_package():
     # e.g. a top-level test_something.py without a dedicated tests/ package
     graph = _make_graph([
         {'kind': 'module', 'name': 'test_widget', 'file': 'test_widget.py', 'relative_path': 'test_widget.py'},
@@ -317,35 +322,36 @@ def test_noise_ids_marks_a_test_module_outside_a_tests_package():
     ])
     elements = build_elements(graph)
 
-    noise = noise_ids(elements)
+    noise = noise_ids_for_tests(elements)
     assert 'mod:test_widget' in noise
     assert 'sym:test_widget.test_it_works' in noise
 
 
-def test_noise_ids_marks_a_vendor_package():
+def test_vendor_noise_ids_marks_a_vendor_package_but_not_test_noise_ids():
     graph = _make_graph([
         {'kind': 'module', 'name': 'vendor.requests.api', 'file': 'vendor/requests/api.py',
          'relative_path': 'vendor/requests/api.py'},
     ])
     elements = build_elements(graph)
 
-    noise = noise_ids(elements)
+    noise = vendor_noise_ids(elements)
     assert 'pkg:vendor' in noise
     assert 'pkg:vendor.requests' in noise
     assert 'mod:vendor.requests.api' in noise
+    assert noise_ids_for_tests(elements) == set()
 
 
-def test_noise_ids_is_case_insensitive():
+def test_noise_ids_are_case_insensitive():
     graph = _make_graph([
         {'kind': 'module', 'name': 'Tests.test_widget', 'file': 'Tests/test_widget.py',
          'relative_path': 'Tests/test_widget.py'},
     ])
     elements = build_elements(graph)
 
-    assert 'pkg:Tests' in noise_ids(elements)
+    assert 'pkg:Tests' in noise_ids_for_tests(elements)
 
 
-def test_noise_ids_does_not_flag_a_module_that_merely_contains_test_as_a_substring():
+def test_noise_ids_do_not_flag_a_module_that_merely_contains_test_as_a_substring():
     # "latest.py" or a "testament" package should not be treated as noise -
     # only an exact "test"/"tests"/"testing" segment, or a test_*.py/*_test.py
     # filename convention, counts.
@@ -355,4 +361,30 @@ def test_noise_ids_does_not_flag_a_module_that_merely_contains_test_as_a_substri
     ])
     elements = build_elements(graph)
 
-    assert noise_ids(elements) == set()
+    assert noise_ids_for_tests(elements) == set()
+    assert vendor_noise_ids(elements) == set()
+
+
+def test_subtree_node_count_includes_self_and_all_descendants():
+    graph = _make_graph([
+        {'kind': 'module', 'name': 'pkg.mod', 'file': 'pkg/mod.py', 'relative_path': 'pkg/mod.py'},
+        {'kind': 'class', 'name': 'pkg.mod.Widget', 'file': 'pkg/mod.py', 'relative_path': 'pkg/mod.py'},
+        {'kind': 'function', 'name': 'pkg.mod.Widget.render', 'file': 'pkg/mod.py', 'relative_path': 'pkg/mod.py'},
+        {'kind': 'function', 'name': 'pkg.mod.top_level', 'file': 'pkg/mod.py', 'relative_path': 'pkg/mod.py'},
+    ])
+    elements = build_elements(graph)
+
+    # the module itself, the class, and both functions
+    assert subtree_node_count(elements, 'mod:pkg.mod') == 4
+    assert subtree_node_count(elements, 'sym:pkg.mod.Widget') == 2
+    assert subtree_node_count(elements, 'sym:pkg.mod.Widget.render') == 1
+
+
+def test_subtree_node_count_does_not_count_synthetic_package_containers():
+    graph = _make_graph([
+        {'kind': 'module', 'name': 'pkg.sub.mod', 'file': 'pkg/sub/mod.py', 'relative_path': 'pkg/sub/mod.py'},
+    ])
+    elements = build_elements(graph)
+
+    # 'pkg' and 'pkg.sub' are synthetic containers, not real symbols
+    assert subtree_node_count(elements, 'pkg:pkg') == 1

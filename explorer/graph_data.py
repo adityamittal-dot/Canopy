@@ -137,6 +137,27 @@ def index_children(elements: list[dict]) -> dict[str, list[dict]]:
     return index
 
 
+def subtree_node_count(elements: list[dict], root_id: str) -> int:
+    """Count module/class/function nodes in the subtree rooted at `root_id`
+    (including `root_id` itself if it's one of those kinds). Packages don't
+    count on their own - they're just containers - so this reflects how
+    many real symbols a filtered-out branch is actually hiding."""
+    by_id = {el['data']['id']: el for el in elements if el['data'].get('kind') != 'call'}
+    children_index = index_children(elements)
+
+    count = 0
+    stack = [root_id]
+    while stack:
+        node_id = stack.pop()
+        node = by_id.get(node_id)
+        if node is None:
+            continue
+        if node['data']['kind'] in ('module', 'class', 'function'):
+            count += 1
+        stack.extend(child['data']['id'] for child in children_index.get(node_id, []))
+    return count
+
+
 def ancestors_of(elements: list[dict], node_id: str) -> list[str]:
     """Ids of `node_id`'s ancestors, immediate parent first, up to (but not
     including) the repo root. Used to reveal a node that isn't currently
@@ -168,44 +189,54 @@ def callers_and_callees(elements: list[dict], node_id: str) -> tuple[list[str], 
 
 # parsing.walk already excludes .git/venv/node_modules/__pycache__ at parse
 # time (they're never even walked), so those never reach here at all. What's
-# left as "noise" for display purposes is test code and vendored/third-party
-# dependencies - still parsed and present in the data, just hidden by
-# default in the graph view (see explorer/dash_apps.py's hide-noise toggle).
-_NOISE_PACKAGE_NAMES = {
-    'test', 'tests', 'testing',
-    'vendor', 'vendored', 'third_party', 'thirdparty',
-    'site-packages', 'dist-packages', '.eggs',
-}
+# left as separately-filterable categories for display purposes are test code
+# and vendored/third-party dependencies - both still parsed and present in
+# the data, just hidden by default in the graph view (two independent
+# toggles - see explorer/dash_apps.py).
+_TEST_PACKAGE_NAMES = {'test', 'tests', 'testing'}
+_VENDOR_PACKAGE_NAMES = {'vendor', 'vendored', 'third_party', 'thirdparty', 'site-packages', 'dist-packages', '.eggs'}
 
 
-def _is_noise_package_label(label: str) -> bool:
-    return label.lower() in _NOISE_PACKAGE_NAMES
-
-
-def _is_noise_module_filename(relative_path: str) -> bool:
+def _is_test_module_filename(relative_path: str) -> bool:
     filename = relative_path.rsplit('/', 1)[-1]
     stem = filename.removesuffix('.py')
     return stem.startswith('test_') or stem.endswith(('_test', '_tests'))
 
 
-def noise_ids(elements: list[dict]) -> set[str]:
-    """Ids of nodes that are noise (a test/vendor package or module) or
-    descend from one. Relies on the same parent-before-child ordering
-    invariant as build_elements (see module docstring) - a single
-    left-to-right pass over `elements` is enough to propagate a hidden
-    ancestor's status down to every descendant."""
-    noise: set[str] = set()
+def _category_ids(elements: list[dict], is_own_category) -> set[str]:
+    """Shared propagation logic for one filter category: a node is in the
+    category if it matches directly, or its parent is already in it.
+    Relies on the same parent-before-child ordering invariant as
+    build_elements (see module docstring) - a single left-to-right pass is
+    enough to propagate a matching ancestor's status down to every
+    descendant."""
+    marked: set[str] = set()
     for el in elements:
         data = el['data']
-        kind = data.get('kind')
-        if kind == 'call':
+        if data.get('kind') == 'call':
             continue
+        if is_own_category(data) or data.get('parent') in marked:
+            marked.add(data['id'])
+    return marked
 
-        is_own_noise = (
-            (kind == 'package' and _is_noise_package_label(data['label']))
-            or (kind == 'module' and data.get('relative_path') and _is_noise_module_filename(data['relative_path']))
-        )
-        if is_own_noise or data.get('parent') in noise:
-            noise.add(data['id'])
 
-    return noise
+def noise_ids_for_tests(elements: list[dict]) -> set[str]:
+    """Ids of nodes that are test code - a test/tests/testing package, or a
+    test_*.py/*_test.py/*_tests.py module - or descend from one."""
+    def is_own(data: dict) -> bool:
+        if data['kind'] == 'package':
+            return data['label'].lower() in _TEST_PACKAGE_NAMES
+        if data['kind'] == 'module':
+            return bool(data.get('relative_path')) and _is_test_module_filename(data['relative_path'])
+        return False
+
+    return _category_ids(elements, is_own)
+
+
+def vendor_noise_ids(elements: list[dict]) -> set[str]:
+    """Ids of nodes that are vendored/third-party dependency code - a
+    vendor/third_party/site-packages-style package - or descend from one."""
+    def is_own(data: dict) -> bool:
+        return data['kind'] == 'package' and data['label'].lower() in _VENDOR_PACKAGE_NAMES
+
+    return _category_ids(elements, is_own)

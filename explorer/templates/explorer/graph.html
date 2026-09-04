@@ -2,11 +2,12 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Canopy — {{ analysis.repo.name }} graph</title>
+    <title>canopy · {{ analysis.repo.name }}</title>
+    <meta charset="utf-8">
+    <style>html, body { margin: 0; padding: 0; background: #12150e; height: 100%; }</style>
     {% plotly_header %}
 </head>
 <body>
-    <h1>{{ analysis.repo.name }} @ {{ analysis.commit_hash|slice:":7" }}</h1>
-    {% plotly_app name="RepoGraph" initial_arguments=initial_arguments %}
+    {% plotly_app name="RepoGraph" initial_arguments=initial_arguments height="100vh" %}
 </body>
 </html>

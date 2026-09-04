@@ -9,7 +9,6 @@ colorama==0.4.6
 comm==0.2.3
 dash==4.4.1
 dash-bootstrap-components==2.0.4
-dash_cytoscape==1.0.2
 Django==6.1
 django-plotly-dash==2.5.1
 dpd_components==0.2.0

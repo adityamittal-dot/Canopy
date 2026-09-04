@@ -132,7 +132,6 @@ STATICFILES_FINDERS = [
 ]
 
 PLOTLY_COMPONENTS = [
-    'dash_cytoscape',
     'dpd_components',
 ]
 

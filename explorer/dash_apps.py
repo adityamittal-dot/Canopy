@@ -1,13 +1,17 @@
+import json
+import re
+
 import dash
-import dash_cytoscape as cyto
 from dash import dcc, html, Input, Output, State
 from django.conf import settings
+from django.templatetags.static import static
 from django_plotly_dash import DjangoDash
 from django_plotly_dash.dash_wrapper import PseudoFlask
 
 from explorer.github_links import fetch_source_snippet, github_blob_url
 from explorer.graph_data import (
-  ancestors_of, build_elements, callers_and_callees, children_of, index_children, noise_ids,
+  build_elements, callers_and_callees, index_children, subtree_node_count,
+  noise_ids_for_tests, vendor_noise_ids,
 )
 from explorer.models import CommitAnalysis
 
@@ -39,188 +43,194 @@ def update_output(n_clicks):
   return f'Button clicked {n_clicks} time(s) - Dash is alive inside Django.'
 
 
-# Hidden by default regardless of how deep a repo's package nesting goes -
-# 'function' is the only kind whose visibility depends on the *kind* of its
-# ancestors, not on raw graph depth (which would otherwise make a module's
-# classes show or hide by default purely based on how many packages it
-# happens to be nested under).
-DEFAULT_HIDDEN_KINDS = {'function'}
+# ---------------------------------------------------------------------------
+# RepoGraph: a nested-box explorer (repo -> packages -> modules -> classes ->
+# functions), traced from a reference design. Packages/modules/classes are
+# always rendered - only function-kind children are collapsed by default,
+# per-container, via an explicit expand/collapse toggle. Two independent
+# filters (tests, vendored deps) render their matching subtrees as dimmed
+# "ghost" placeholders instead of omitting them silently.
+# ---------------------------------------------------------------------------
 
-graph_app = DjangoDash('RepoGraph')
+graph_app = DjangoDash('RepoGraph', external_stylesheets=[static('explorer/canopy.css')])
 
-graph_app.layout = html.Div([
+graph_app.layout = html.Div(className='cy-app', children=[
   dcc.Store(id='analysis-id-store', data=None),
   dcc.Store(id='elements-store', data=[]),
-  dcc.Store(id='expanded-store', data=[]),
   dcc.Store(id='repo-meta-store', data={}),
+  dcc.Store(id='expanded-store', data=[]),
   dcc.Store(id='selected-node-store', data=None),
-  dcc.Store(id='search-target-store', data=None),
-  dcc.Checklist(
-    id='show-calls',
-    options=[{'label': ' Show call edges', 'value': 'show'}],
-    value=[],
-  ),
-  dcc.Checklist(
-    id='hide-noise',
-    options=[{'label': ' Hide tests & vendored deps', 'value': 'hide'}],
-    value=['hide'],
-  ),
-  html.Div([
-    dcc.Input(id='search-input', type='text', placeholder='Search by name...', debounce=False),
-    html.Button('Search', id='search-button', n_clicks=0),
-    html.Span(id='search-status'),
-  ]),
-  html.Div(id='graph-status'),
-  html.Div([
-    html.Div(
-      cyto.Cytoscape(
-        id='repo-graph',
-        layout={'name': 'cose', 'animate': False},
-        style={'width': '100%', 'height': '80vh'},
-        elements=[],
-        stylesheet=[
-          {'selector': 'node', 'style': {'label': 'data(label)', 'font-size': '10px'}},
-          {'selector': ':parent', 'style': {'background-opacity': 0.15, 'border-width': 1}},
-          {'selector': 'edge', 'style': {'curve-style': 'bezier', 'target-arrow-shape': 'triangle', 'width': 1}},
-          {'selector': 'node[kind = "repo"]', 'style': {'background-color': '#888'}},
-          {'selector': 'node[kind = "package"]', 'style': {'background-color': '#7aa'}},
-          {'selector': 'node[kind = "module"]', 'style': {'background-color': '#59a'}},
-          {'selector': 'node[kind = "class"]', 'style': {'background-color': '#a75'}},
-          {'selector': 'node[kind = "function"]', 'style': {'background-color': '#5a5'}},
-          {'selector': 'edge[kind = "call"]', 'style': {'line-color': '#c33', 'target-arrow-color': '#c33'}},
-        ],
-      ),
-      style={'width': '65%', 'display': 'inline-block', 'vertical-align': 'top'},
-    ),
-    html.Div([
-      html.Div(id='detail-panel'),
-      html.Div(id='source-snippet'),
-    ], style={'width': '33%', 'display': 'inline-block', 'vertical-align': 'top', 'padding': '0 1em'}),
+  dcc.Store(id='show-edges-store', data=True),
+  dcc.Store(id='hide-tests-store', data=True),
+  dcc.Store(id='hide-vendor-store', data=True),
+
+  html.Div(className='cy-shell', children=[
+    html.Div(id='cy-header'),
+    html.Div(className='cy-toolbar', children=[
+      html.Div(className='cy-search', children=[
+        html.Span('search', className='cy-search__label'),
+        html.Div(className='cy-search__box', children=[
+          html.Span('/', className='cy-search__prefix'),
+          dcc.Input(id='search-input', type='text', placeholder='qualified name', debounce=False, n_submit=0),
+        ]),
+      ]),
+      html.Span(className='cy-vdivider'),
+      html.Button('edges: on', id='toggle-edges', className='cy-toggle cy-toggle--active'),
+      html.Button('tests: hide', id='toggle-tests', className='cy-toggle cy-toggle--active'),
+      html.Button('vendor: hide', id='toggle-vendor', className='cy-toggle cy-toggle--active'),
+      html.Div(id='cy-breadcrumb', className='cy-breadcrumb'),
+    ]),
+    html.Div(className='cy-body', children=[
+      html.Div(className='cy-main', children=[
+        html.Div(className='cy-canvas', children=[
+          html.Div(id='cy-tag', className='cy-canvas__tag'),
+          html.Div(id='cy-tree'),
+          html.Div(className='cy-canvas__footer', children=[
+            html.Div(className='cy-legend', children=[
+              html.Div([html.Span(className='cy-dot', style={'background': 'var(--cy-repo)'}), html.Span('repo')], className='cy-legend__item'),
+              html.Div([html.Span(className='cy-dot', style={'background': 'var(--cy-pkg)'}), html.Span('package')], className='cy-legend__item'),
+              html.Div([html.Span(className='cy-dot', style={'background': 'var(--cy-mod)'}), html.Span('module')], className='cy-legend__item'),
+              html.Div([html.Span(className='cy-dot', style={'background': 'var(--cy-cls)'}), html.Span('class')], className='cy-legend__item'),
+              html.Div([html.Span(className='cy-dot', style={'background': 'var(--cy-fn)'}), html.Span('function')], className='cy-legend__item'),
+            ]),
+            html.Div(id='cy-toast'),
+          ]),
+        ]),
+      ]),
+      html.Aside(id='cy-panel', className='cy-panel'),
+    ]),
   ]),
 ])
 
 
+# --- data loading -----------------------------------------------------------
+
 @graph_app.callback(
   Output('elements-store', 'data'),
-  Output('graph-status', 'children'),
   Output('repo-meta-store', 'data'),
   Input('analysis-id-store', 'data'),
 )
 def load_elements(analysis_id):
   if not analysis_id:
-    return [], 'No analysis selected.', {}
+    return [], {}
 
   try:
     analysis = CommitAnalysis.objects.select_related('repo').get(pk=analysis_id)
   except CommitAnalysis.DoesNotExist:
-    return [], f'No analysis found for id {analysis_id}.', {}
+    return [], {}
 
   elements = build_elements(analysis.graph, repo_label=analysis.repo.name)
-  status = f'{analysis.repo.name} @ {analysis.commit_hash[:7]} - click a box to expand it.'
-  repo_meta = {'url': analysis.repo.url, 'commit_hash': analysis.commit_hash}
-  return elements, status, repo_meta
+  repo_meta = {
+    'url': analysis.repo.url,
+    'name': analysis.repo.name,
+    'commit_hash': analysis.commit_hash,
+  }
+  return elements, repo_meta
 
 
-def _resolve_navigation_target(triggered_id, triggered_value, tapped):
-  """Given Dash's `callback_context.triggered_id`/the triggering prop's
-  value, and the tapNodeData payload, return the node id that should
-  become selected/revealed, or None if this invocation shouldn't do
-  anything (e.g. the initial call, an untapped/empty event, or - see
-  below - a nav-btn that wasn't actually clicked).
+# --- header / tag / toggles --------------------------------------------------
 
-  A pattern-matching ALL input re-fires the callback not only on a real
-  click but also whenever the *set* of matched components changes - e.g.
-  render_detail_panel mounting a fresh batch of caller/callee buttons for
-  a newly-selected node. Dash reports one of those freshly-mounted (never
-  clicked) buttons as the trigger in that case too, with its n_clicks at
-  the value it was just created with (0). Only a real click increments
-  n_clicks, so requiring a truthy triggered_value is what tells the two
-  apart - without it, selecting a node can spuriously auto-navigate to
-  one of its own callees, which can cascade further.
-  """
-  if triggered_id == 'repo-graph':
-    return tapped.get('id') if tapped else None
-  if isinstance(triggered_id, dict) and triggered_id.get('type') == 'nav-btn':
-    return triggered_id.get('target') if triggered_value else None
-  return None
+@graph_app.callback(
+  Output('cy-header', 'children'),
+  Output('cy-tag', 'children'),
+  Input('elements-store', 'data'),
+  Input('repo-meta-store', 'data'),
+)
+def render_header(elements, repo_meta):
+  node_count = sum(1 for el in elements if el['data'].get('kind') not in (None, 'call'))
+  edge_count = sum(1 for el in elements if el['data'].get('kind') == 'call')
+
+  header = html.Div(className='cy-header', children=[
+    html.A(href='/', className='cy-header__logo', children=[
+      html.Span(className='cy-header__logo-dot'),
+      html.Span('canopy', className='cy-header__wordmark'),
+      html.Span('/ survey', className='cy-header__subpath'),
+    ]),
+    html.Div(className='cy-header__meta', children=(
+      [
+        html.Span('repo', className='muted'),
+        html.Span(repo_meta.get('name', ''), className='fg'),
+        html.Span('@', className='faint'),
+        html.Span(repo_meta.get('commit_hash', '')[:7], className='accent'),
+        html.Span(className='cy-vdivider'),
+        html.Span(f'{node_count} nodes', className='muted'),
+        html.Span('·', className='faint'),
+        html.Span(f'{edge_count} edges', className='muted'),
+      ] if repo_meta.get('name') else []
+    )),
+  ])
+
+  tag = f"repo · {repo_meta['name'].upper()}" if repo_meta.get('name') else ''
+  return header, tag
 
 
-def _compute_navigation_update(target_id, expanded, elements):
-  """Returns (new_expanded, target_id). new_expanded is None if `expanded`
-  doesn't actually need to change (caller should use dash.no_update)."""
-  if target_id is None:
-    return None, None
+def _make_toggle_callback(button_id, store_id):
+  @graph_app.callback(
+    Output(store_id, 'data'),
+    Input(button_id, 'n_clicks'),
+    State(store_id, 'data'),
+    prevent_initial_call=True,
+  )
+  def _toggle(_n_clicks, current):
+    return not current
+  return _toggle
 
-  # A caller/callee "navigate to" click can target a node that isn't
-  # currently visible at all, unlike a direct graph tap (which can only
-  # ever target an already-visible node) - so ancestors must be revealed
-  # too, not just the target's own children.
-  to_reveal = ancestors_of(elements, target_id)
-  if children_of(elements, target_id):
-    to_reveal = to_reveal + [target_id]
 
-  # Cross-cutting "who calls this, anywhere in the repo": reveal the
-  # selected node's own callers/callees too, wherever they live in the
-  # tree, so the connection is visible on the canvas immediately rather
-  # than requiring a further click through each "Called by"/"Calls" button.
-  callers, callees = callers_and_callees(elements, target_id)
-  for connected_id in callers + callees:
-    to_reveal = to_reveal + ancestors_of(elements, connected_id)
-
-  # to_reveal can contain duplicates (e.g. two callees sharing an ancestor
-  # package) - dedupe here rather than letting them accumulate into
-  # expanded across repeated navigations.
-  seen = set(expanded)
-  needed = []
-  for node_id in to_reveal:
-    if node_id not in seen:
-      needed.append(node_id)
-      seen.add(node_id)
-
-  if not needed:
-    return None, target_id
-  return expanded + needed, target_id
+_make_toggle_callback('toggle-edges', 'show-edges-store')
+_make_toggle_callback('toggle-tests', 'hide-tests-store')
+_make_toggle_callback('toggle-vendor', 'hide-vendor-store')
 
 
 @graph_app.callback(
-  Output('expanded-store', 'data'),
-  Output('selected-node-store', 'data'),
-  Input('repo-graph', 'tapNodeData'),
-  Input({'type': 'nav-btn', 'role': dash.ALL, 'target': dash.ALL}, 'n_clicks'),
-  State('expanded-store', 'data'),
-  State('elements-store', 'data'),
-  State('selected-node-store', 'data'),
-  prevent_initial_call=True,
+  Output('toggle-edges', 'children'),
+  Output('toggle-edges', 'className'),
+  Input('show-edges-store', 'data'),
 )
-def navigate(tapped, _nav_clicks, expanded, elements, currently_selected):
-  triggered = dash.callback_context.triggered[0] if dash.callback_context.triggered else {}
-  target_id = _resolve_navigation_target(dash.callback_context.triggered_id, triggered.get('value'), tapped)
+def render_edges_toggle(show_edges):
+  label = 'edges: on' if show_edges else 'edges: off'
+  className = 'cy-toggle cy-toggle--active' if show_edges else 'cy-toggle'
+  return label, className
 
-  if target_id is None or target_id == currently_selected:
-    return dash.no_update, dash.no_update
 
-  new_expanded, selected_id = _compute_navigation_update(target_id, expanded, elements)
-  return (new_expanded if new_expanded is not None else dash.no_update), selected_id
+def _render_filter_toggle(hidden, verb):
+  label = f'{verb}: hide' if hidden else f'{verb}: show'
+  className = 'cy-toggle cy-toggle--active' if hidden else 'cy-toggle'
+  return label, className
+
+
+@graph_app.callback(
+  Output('toggle-tests', 'children'),
+  Output('toggle-tests', 'className'),
+  Input('hide-tests-store', 'data'),
+)
+def render_tests_toggle(hide_tests):
+  return _render_filter_toggle(hide_tests, 'tests')
+
+
+@graph_app.callback(
+  Output('toggle-vendor', 'children'),
+  Output('toggle-vendor', 'className'),
+  Input('hide-vendor-store', 'data'),
+)
+def render_vendor_toggle(hide_vendor):
+  return _render_filter_toggle(hide_vendor, 'vendor')
+
+
+# --- interaction: select / expand / navigate / search ------------------------
+
+def _find_element(elements, node_id):
+  return next((el for el in elements if el['data']['id'] == node_id), None)
 
 
 def _resolve_search_target(query, elements, excluded_ids):
   """Case-insensitive substring match against label and qualified name,
-  restricted to module/class/function nodes. `excluded_ids` is meant to be
-  the current noise-filter set when "hide noise" is on - a match there
-  wouldn't actually become visible via reveal (render_visible_elements
-  hides noise regardless of expansion state), so it's excluded from
-  results entirely rather than "found" but silently invisible. A
-  default-hidden leaf function is NOT excluded - unlike noise, that's
-  just a collapsed-by-default node, fully revealable like any other.
-
-  Returns (target_id_or_None, status_message). An exact label match wins;
-  otherwise the shortest qualified name among substring matches (a
-  reasonable proxy for "most specific/relevant" - e.g. searching "add"
-  should prefer `pkg.add` over `pkg.subpkg.mod.add_all_things`).
-  """
+  restricted to module/class/function nodes. Excludes noise-filtered ids -
+  a match there wouldn't actually be visible even after reveal, since
+  noise-hiding is unconditional (see render_tree). Prefers an exact label
+  match, else the shortest qualified name among substring matches."""
   query = (query or '').strip()
   if not query:
-    return None, 'Enter a search term.'
+    return None
 
   query_lower = query.lower()
   candidates = [
@@ -229,196 +239,388 @@ def _resolve_search_target(query, elements, excluded_ids):
     and el['data']['id'] not in excluded_ids
     and (query_lower in el['data']['label'].lower() or query_lower in el['data'].get('name', '').lower())
   ]
-
   if not candidates:
-    return None, f'No match for "{query}".'
+    return None
 
   exact = [el for el in candidates if el['data']['label'].lower() == query_lower]
   best = exact[0] if exact else min(candidates, key=lambda el: len(el['data'].get('name') or el['data']['label']))
+  return best['data']['id']
 
-  suffix = f' ({len(candidates) - 1} other match(es))' if len(candidates) > 1 else ''
-  return best['data']['id'], f'Found {best["data"].get("name", best["data"]["label"])}{suffix}.'
+
+def _reveal_target(target_id, expanded, elements):
+  """Only a function target ever needs revealing - packages/modules/classes
+  are always rendered (see render_tree), so the only thing that can hide a
+  target is its own immediate parent's function list being collapsed.
+  Returns the updated expanded list, or None if nothing needs to change."""
+  target = _find_element(elements, target_id)
+  if target is None or target['data']['kind'] != 'function':
+    return None
+  parent_id = target['data'].get('parent')
+  if parent_id is None or parent_id in expanded:
+    return None
+  return expanded + [parent_id]
+
+
+def _toggle_membership(items, item_id):
+  """Add item_id if absent, remove if present. Always returns a new list."""
+  if item_id in items:
+    return [i for i in items if i != item_id]
+  return items + [item_id]
+
+
+def _resolve_click(action, node_id, expanded, elements, currently_selected):
+  """Pure decision logic for one already-identified click action. Returns
+  (new_expanded_or_None, new_selected_or_None) - None means "no change",
+  which the calling callback translates to dash.no_update. Kept separate
+  from the callback itself (which needs a live dash.callback_context) so
+  this can be unit-tested directly."""
+  if action == 'expand':
+    return _toggle_membership(expanded, node_id), None
+
+  if action in ('select', 'navigate'):
+    if node_id == currently_selected:
+      return None, None
+    new_expanded = _reveal_target(node_id, expanded, elements) if action == 'navigate' else None
+    return new_expanded, node_id
+
+  return None, None
+
+
+def _resolve_search(search_query, elements, expanded, currently_selected, hide_tests, hide_vendor):
+  """Same (new_expanded_or_None, new_selected_or_None) convention as
+  _resolve_click, for a search submission."""
+  excluded = set()
+  if hide_tests:
+    excluded |= noise_ids_for_tests(elements)
+  if hide_vendor:
+    excluded |= vendor_noise_ids(elements)
+
+  target_id = _resolve_search_target(search_query, elements, excluded)
+  if target_id is None or target_id == currently_selected:
+    return None, None
+  return _reveal_target(target_id, expanded, elements), target_id
+
+
+def _parse_triggered(triggered):
+  """django-plotly-dash's CallbackContext shim doesn't implement Dash's
+  `triggered_id` convenience property (confirmed via a live click - it
+  raises AttributeError, not just an outdated stub) - only `.triggered`,
+  a list of {'prop_id': 'id.prop', 'value': ...} dicts. Parse the
+  component id out of prop_id by hand instead: strip the trailing
+  '.prop_name', then JSON-decode what's left if it looks like a
+  pattern-matching dict id. Returns (triggered_id, value), or (None, None)
+  if nothing triggered."""
+  if not triggered:
+    return None, None
+  prop_id = triggered[0]['prop_id']
+  component_id_str = prop_id.rsplit('.', 1)[0]
+  triggered_id = json.loads(component_id_str) if component_id_str.startswith('{') else component_id_str
+  return triggered_id, triggered[0]['value']
 
 
 @graph_app.callback(
-  Output('search-target-store', 'data'),
-  Output('search-status', 'children'),
-  Input('search-button', 'n_clicks'),
+  Output('expanded-store', 'data'),
+  Output('selected-node-store', 'data'),
+  Input({'type': 'cy-click', 'action': dash.ALL, 'id': dash.ALL}, 'n_clicks'),
   Input('search-input', 'n_submit'),
   State('search-input', 'value'),
-  State('elements-store', 'data'),
-  State('hide-noise', 'value'),
-  prevent_initial_call=True,
-)
-def search_for_node(_n_clicks, _n_submit, query, elements, hide_noise_value):
-  excluded_ids = noise_ids(elements) if 'hide' in (hide_noise_value or []) else set()
-  target_id, message = _resolve_search_target(query, elements, excluded_ids)
-  return target_id, message
-
-
-@graph_app.callback(
-  Output('expanded-store', 'data', allow_duplicate=True),
-  Output('selected-node-store', 'data', allow_duplicate=True),
-  Input('search-target-store', 'data'),
   State('expanded-store', 'data'),
   State('elements-store', 'data'),
+  State('selected-node-store', 'data'),
+  State('hide-tests-store', 'data'),
+  State('hide-vendor-store', 'data'),
   prevent_initial_call=True,
 )
-def reveal_search_target(target_id, expanded, elements):
-  if target_id is None:
-    return dash.no_update, dash.no_update
-  new_expanded, selected_id = _compute_navigation_update(target_id, expanded, elements)
-  return (new_expanded if new_expanded is not None else dash.no_update), selected_id
+def handle_interaction(_click_values, _n_submit, search_query, expanded, elements,
+                        currently_selected, hide_tests, hide_vendor):
+  triggered_id, triggered_value = _parse_triggered(dash.callback_context.triggered)
+
+  if triggered_id == 'search-input':
+    new_expanded, new_selected = _resolve_search(search_query, elements, expanded, currently_selected, hide_tests, hide_vendor)
+  elif isinstance(triggered_id, dict) and triggered_id.get('type') == 'cy-click' and triggered_value:
+    # A pattern-matching ALL input re-fires not only on a real click but
+    # also whenever the *set* of matched components changes (e.g.
+    # re-rendering the tree after an expand/collapse mounts a fresh batch
+    # of buttons) - a freshly-mounted (never clicked) component's n_clicks
+    # is still 0 in that case, which the `and triggered_value` above excludes.
+    new_expanded, new_selected = _resolve_click(triggered_id.get('action'), triggered_id.get('id'), expanded, elements, currently_selected)
+  else:
+    new_expanded, new_selected = None, None
+
+  return (
+    new_expanded if new_expanded is not None else dash.no_update,
+    new_selected if new_selected is not None else dash.no_update,
+  )
+
+
+# --- tree rendering -----------------------------------------------------------
+
+def _click_id(action, node_id):
+  return {'type': 'cy-click', 'action': action, 'id': node_id}
+
+
+def _fn_pill(data, selected_id):
+  node_id = data['id']
+  className = 'cy-fn-pill' + (' is-selected' if node_id == selected_id else '')
+  return html.Button(data['label'], id=_click_id('select', node_id), className=className, title=data.get('name', data['label']))
+
+
+def _ghost_box(data, category, elements):
+  count = subtree_node_count(elements, data['id'])
+  noun = 'node' if count == 1 else 'nodes'
+  return html.Div(className='cy-ghost', children=[
+    html.Div(className='cy-ghost__label', children=[
+      html.Span(className='cy-dot cy-dot--hollow'),
+      html.Span(f"{data['kind']} / {data['label']}"),
+    ]),
+    html.Div(f'filtered · {category} ({count} {noun})', className='cy-ghost__status'),
+  ])
+
+
+def _partition_children(children, test_noise, vendor_noise):
+  """Split a container's direct children into (containers, functions,
+  ghosts) - ghosts being (data, category) pairs for noise-filtered children,
+  rendered as dimmed placeholders rather than omitted. Shared by every level
+  of the tree, including the top-level repo children in render_tree, so a
+  filtered item is never silently dropped no matter how deep it is."""
+  containers, functions, ghosts = [], [], []
+  for child in children:
+    cid = child['data']['id']
+    if cid in test_noise:
+      ghosts.append((child['data'], 'test'))
+    elif cid in vendor_noise:
+      ghosts.append((child['data'], 'vendor'))
+    elif child['data']['kind'] == 'function':
+      functions.append(child)
+    else:
+      containers.append(child)
+  return containers, functions, ghosts
+
+
+def _render_container(node_id, elements, children_index, expanded, test_noise, vendor_noise, selected_id):
+  node = _find_element(elements, node_id)
+  data = node['data']
+  kind = data['kind']
+  children = children_index.get(node_id, [])
+  container_children, function_children, ghosts = _partition_children(children, test_noise, vendor_noise)
+
+  body = [
+    _render_container(child['data']['id'], elements, children_index, expanded, test_noise, vendor_noise, selected_id)
+    for child in container_children
+  ]
+
+  if function_children:
+    if node_id in expanded:
+      body.append(html.Div(
+        [_fn_pill(f['data'], selected_id) for f in function_children],
+        className='cy-fn-list',
+      ))
+    else:
+      n = len(function_children)
+      body.append(html.Div(f"collapsed · click to expand ({n} fn{'s' if n != 1 else ''})", className='cy-box__status'))
+
+  for ghost_data, category in ghosts:
+    body.append(_ghost_box(ghost_data, category, elements))
+
+  label_className = 'cy-box__label' + (' is-selected' if node_id == selected_id else '')
+  header_children = [
+    html.Button([
+      html.Span(className='cy-dot'),
+      html.Span(f"{kind} / {data['label']}", className='name'),
+    ], id=_click_id('select', node_id), className=label_className),
+  ]
+  if function_children:
+    header_children.append(html.Button(
+      '−' if node_id in expanded else '+',
+      id=_click_id('expand', node_id),
+      className='cy-box__expand',
+    ))
+
+  box_className = f'cy-box cy-box--{kind}' + (' is-selected' if node_id == selected_id else '')
+  box_body = [html.Div(header_children, className='cy-box__header')]
+  if body:
+    box_body.append(html.Div(body, className='cy-box__children'))
+
+  return html.Div(box_body, className=box_className)
 
 
 @graph_app.callback(
-  Output('repo-graph', 'elements'),
+  Output('cy-tree', 'children'),
   Input('elements-store', 'data'),
   Input('expanded-store', 'data'),
-  Input('show-calls', 'value'),
-  Input('hide-noise', 'value'),
+  Input('hide-tests-store', 'data'),
+  Input('hide-vendor-store', 'data'),
+  Input('selected-node-store', 'data'),
 )
-def render_visible_elements(elements, expanded, show_calls_value, hide_noise_value):
-  # children_by_parent is needed unconditionally, not just when something is
-  # expanded: a function that itself contains a nested class/function (a
-  # locally-defined class, or a nested def) is a container, not a leaf, and
-  # must stay visible by default so its children aren't left with a parent
-  # that got hidden - Cytoscape requires every visible node's parent to also
-  # be visible. Only childless ("leaf") functions are hidden by default.
-  children_by_parent = index_children(elements)
+def render_tree(elements, expanded, hide_tests, hide_vendor, selected_id):
+  if not elements:
+    return html.Div('No analysis loaded.', className='cy-box__status')
 
-  # Two different kinds of "hidden", kept separate on purpose: a default-
-  # hidden leaf function is meant to be revealed by expanding its parent
-  # (that's the collapsed-by-default browsing model), but a noise-filtered
-  # node (test/vendor code) must stay hidden regardless of expansion state
-  # - it's "not part of this view" rather than "collapsed for now".
-  default_hidden_ids = {
-    el['data']['id']
-    for el in elements
-    if el['data'].get('kind') in DEFAULT_HIDDEN_KINDS and not children_by_parent.get(el['data']['id'])
-  }
-  noise = noise_ids(elements) if 'hide' in (hide_noise_value or []) else set()
+  test_noise = noise_ids_for_tests(elements) if hide_tests else set()
+  vendor_noise = vendor_noise_ids(elements) if hide_vendor else set()
+  children_index = index_children(elements)
 
-  visible_ids = {
-    el['data']['id']
-    for el in elements
-    if el['data'].get('kind') != 'call' and el['data']['id'] not in default_hidden_ids and el['data']['id'] not in noise
-  }
-
-  for parent_id in expanded:
-    if parent_id in noise:
-      # e.g. expanded before "hide noise" was toggled on - stays hidden.
-      continue
-    visible_ids |= {c['data']['id'] for c in children_by_parent.get(parent_id, []) if c['data']['id'] not in noise}
-
-  visible = [el for el in elements if el['data'].get('kind') != 'call' and el['data']['id'] in visible_ids]
-
-  if 'show' in (show_calls_value or []):
-    visible += [
-      el for el in elements
-      if el['data'].get('kind') == 'call'
-      and el['data']['source'] in visible_ids
-      and el['data']['target'] in visible_ids
-    ]
-
-  return visible
+  top_level = children_index.get('repo', [])
+  containers, _functions, ghosts = _partition_children(top_level, test_noise, vendor_noise)
+  # _functions is always empty in practice - a function always nests under a
+  # module or class, never directly under the repo - but _partition_children
+  # handles every level uniformly regardless, so nothing special-cases that.
+  boxes = [
+    _render_container(child['data']['id'], elements, children_index, expanded, test_noise, vendor_noise, selected_id)
+    for child in containers
+  ]
+  boxes.extend(_ghost_box(ghost_data, category, elements) for ghost_data, category in ghosts)
+  return html.Div(boxes, className='cy-grid')
 
 
-def _find_element(elements, node_id):
-  return next((el for el in elements if el['data']['id'] == node_id), None)
+# --- breadcrumb + toast --------------------------------------------------------
 
-
-def _nav_button(role, target_id, elements):
-  # id carries role and target as separate keys, not encoded into one
-  # string - a node that is both a caller and a callee of the selected
-  # node (mutual recursion) needs two distinct buttons, and Dash requires
-  # every component id to be unique.
-  target = _find_element(elements, target_id)
-  label = target['data']['label'] if target else target_id
-  title = target['data'].get('name', target_id) if target else target_id
-  return html.Button(label, id={'type': 'nav-btn', 'role': role, 'target': target_id}, title=title, n_clicks=0)
+@graph_app.callback(
+  Output('cy-breadcrumb', 'children'),
+  Input('selected-node-store', 'data'),
+  State('elements-store', 'data'),
+)
+def render_breadcrumb(selected_id, elements):
+  if not selected_id:
+    return ''
+  el = _find_element(elements, selected_id)
+  if el is None:
+    return ''
+  return el['data'].get('name', el['data']['label'])
 
 
 @graph_app.callback(
-  Output('detail-panel', 'children'),
+  Output('cy-toast', 'children'),
   Input('selected-node-store', 'data'),
-  Input('hide-noise', 'value'),
+  Input('show-edges-store', 'data'),
+  State('elements-store', 'data'),
+)
+def render_toast(selected_id, show_edges, elements):
+  if not selected_id or not show_edges:
+    return ''
+  el = _find_element(elements, selected_id)
+  if el is None:
+    return ''
+  callers, callees = callers_and_callees(elements, selected_id)
+  total = len(callers) + len(callees)
+  return html.Div(className='cy-toast', children=[
+    html.Span(str(total), className='accent'),
+    f' call relation{"s" if total != 1 else ""} highlighted for ',
+    html.Span(el['data']['label'], className='fg'),
+  ])
+
+
+# --- detail panel --------------------------------------------------------------
+
+_KEYWORD_RE = re.compile(r'^(\s*)(async def|def|class)\b(.*)$')
+
+
+def _highlight_line(line):
+  match = _KEYWORD_RE.match(line)
+  if match:
+    indent, keyword, rest = match.groups()
+    return [indent, html.Span(keyword, className='cy-source__kw'), rest]
+  if line.strip().startswith(('"""', "'''")):
+    return [html.Span(line, className='cy-source__doc')]
+  return [line]
+
+
+def _render_source_block(snippet, start_lineno):
+  lines = snippet.split('\n')
+  rows = []
+  for offset, line in enumerate(lines):
+    rows.append(html.Div([
+      html.Span(str(start_lineno + offset), className='cy-source__lineno'),
+      html.Span(_highlight_line(line)),
+    ], className='cy-source__line'))
+  return html.Div(rows, className='cy-source')
+
+
+@graph_app.callback(
+  Output('cy-panel', 'children'),
+  Input('selected-node-store', 'data'),
+  Input('show-edges-store', 'data'),
+  Input('hide-tests-store', 'data'),
+  Input('hide-vendor-store', 'data'),
   State('elements-store', 'data'),
   State('repo-meta-store', 'data'),
 )
-def render_detail_panel(selected_id, hide_noise_value, elements, repo_meta):
+def render_detail_panel(selected_id, show_edges, hide_tests, hide_vendor, elements, repo_meta):
   if not selected_id:
-    return 'Click a node to see its details.'
+    return html.Div('Select a node to see its details.', className='cy-panel__section')
 
   el = _find_element(elements, selected_id)
   if el is None:
     return dash.no_update
 
   data = el['data']
-  rows = [
-    html.H3(data.get('name', data['label'])),
-    html.P(f"kind: {data['kind']}"),
+  sections = [
+    html.Div(className='cy-panel__header', children=[
+      html.Span('node detail', className='cy-panel__label'),
+      html.Span(data['kind'], className=f"cy-k-{data['kind']}"),
+    ]),
   ]
 
+  info_block = [html.Div(data.get('name', data['label']), className='cy-panel__name')]
   if data.get('docstring'):
-    rows.append(html.P(data['docstring']))
-
+    info_block.append(html.Div(data['docstring'], className='cy-panel__doc'))
   if data.get('relative_path'):
-    line_range = f" (lines {data['lineno']}-{data['end_lineno']})" if data.get('end_lineno') else ''
-    rows.append(html.P(f"{data['relative_path']}{line_range}"))
+    info_block.append(html.Div(data['relative_path'], className='cy-panel__path'))
+    if data.get('lineno'):
+      line_text = f"L{data['lineno']}" + (f"–{data['end_lineno']}" if data.get('end_lineno') else '')
+      info_block.append(html.Div(line_text, className='cy-panel__lines'))
+    repo_url = repo_meta.get('url') if repo_meta else None
+    if repo_url:
+      blob_url = github_blob_url(repo_url, repo_meta['commit_hash'], data['relative_path'], data.get('lineno'), data.get('end_lineno'))
+      if blob_url:
+        info_block.append(html.A('view on GitHub →', href=blob_url, target='_blank', rel='noreferrer', className='cy-panel__link'))
+  sections.append(html.Div(info_block, className='cy-panel__section'))
 
-  if data.get('kind') == 'function':
-    rows.append(html.P(
-      f"complexity: {data.get('complexity')} - loc: {data.get('loc')} - "
-      f"fan-in: {data.get('fan_in')} - fan-out: {data.get('fan_out')}"
-    ))
+  if data['kind'] == 'function':
+    sections.append(html.Div(className='cy-stats', children=[
+      html.Div([html.Div(str(data.get('loc', 0)), className='cy-stat__value'), html.Div('loc', className='cy-stat__label')]),
+      html.Div([html.Div(str(data.get('complexity', 0)), className='cy-stat__value'), html.Div('ccyc', className='cy-stat__label')]),
+      html.Div([html.Div(str(data.get('fan_in', 0)), className='cy-stat__value'), html.Div('fan-in', className='cy-stat__label')]),
+      html.Div([html.Div(str(data.get('fan_out', 0)), className='cy-stat__value'), html.Div('fan-out', className='cy-stat__label')]),
+    ]))
 
-  repo_url = repo_meta.get('url') if repo_meta else None
-  if repo_url and data.get('relative_path'):
-    blob_url = github_blob_url(
-      repo_url, repo_meta['commit_hash'], data['relative_path'], data.get('lineno'), data.get('end_lineno'),
-    )
-    if blob_url:
-      rows.append(html.A('View on GitHub', href=blob_url, target='_blank'))
+    repo_url = repo_meta.get('url') if repo_meta else None
+    if repo_url and data.get('relative_path'):
+      snippet = fetch_source_snippet(
+        repo_url, repo_meta['commit_hash'], data['relative_path'], data.get('lineno'), data.get('end_lineno'),
+      )
+      source_body = _render_source_block(snippet, data.get('lineno', 1)) if snippet is not None else html.Div(
+        'Source unavailable.', className='cy-panel__doc',
+      )
+      sections.append(html.Div([
+        html.Div('source', className='cy-panel__label', style={'marginBottom': '.5rem'}),
+        source_body,
+      ], className='cy-panel__section'))
 
-  # Excluding noise-side callers/callees when the filter is on for the same
-  # reason search does: a button pointing at a noise node would update the
-  # selection but the graph would never actually show it (render_visible_
-  # elements hides noise regardless of expansion state) - showing it here
-  # would silently do nothing when clicked.
-  noise = noise_ids(elements) if 'hide' in (hide_noise_value or []) else set()
-  callers, callees = callers_and_callees(elements, selected_id)
-  callers = [c for c in callers if c not in noise]
-  callees = [c for c in callees if c not in noise]
+  if show_edges:
+    excluded = set()
+    if hide_tests:
+      excluded |= noise_ids_for_tests(elements)
+    if hide_vendor:
+      excluded |= vendor_noise_ids(elements)
 
-  if callers:
-    rows.append(html.P('Called by:'))
-    rows.append(html.Div([_nav_button('caller', c, elements) for c in callers]))
-  if callees:
-    rows.append(html.P('Calls:'))
-    rows.append(html.Div([_nav_button('callee', c, elements) for c in callees]))
+    callers, callees = callers_and_callees(elements, selected_id)
+    callers = [c for c in callers if c not in excluded]
+    callees = [c for c in callees if c not in excluded]
 
-  return rows
+    def nav_button(node_id):
+      target = _find_element(elements, node_id)
+      label = target['data'].get('name', target['data']['label']) if target else node_id
+      return html.Button(label, id=_click_id('navigate', node_id), className='cy-list-btn')
 
+    sections.append(html.Div([
+      html.Div(['callers ', html.Span(f'· {len(callers)}', className='cy-k-repo')], className='cy-panel__label', style={'marginBottom': '.5rem'}),
+      html.Div([nav_button(c) for c in callers] or [html.Div('none resolved', className='cy-panel__doc')]),
+    ], className='cy-panel__section'))
 
-@graph_app.callback(
-  Output('source-snippet', 'children'),
-  Input('selected-node-store', 'data'),
-  State('elements-store', 'data'),
-  State('repo-meta-store', 'data'),
-)
-def render_source_snippet(selected_id, elements, repo_meta):
-  if not selected_id or not repo_meta or not repo_meta.get('url'):
-    return ''
+    sections.append(html.Div([
+      html.Div(['callees ', html.Span(f'· {len(callees)}', className='cy-k-repo')], className='cy-panel__label', style={'marginBottom': '.5rem'}),
+      html.Div([nav_button(c) for c in callees] or [html.Div('none resolved', className='cy-panel__doc')]),
+    ], className='cy-panel__section', style={'borderBottom': 'none'}))
 
-  el = _find_element(elements, selected_id)
-  if el is None or not el['data'].get('relative_path'):
-    return ''
-
-  data = el['data']
-  snippet = fetch_source_snippet(
-    repo_meta['url'], repo_meta['commit_hash'], data['relative_path'], data.get('lineno'), data.get('end_lineno'),
-  )
-  if snippet is None:
-    return 'Source unavailable.'
-  return html.Pre(snippet)
+  return sections
