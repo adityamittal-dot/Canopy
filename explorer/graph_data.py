@@ -34,6 +34,7 @@ def build_elements(graph: dict, repo_label: str = 'repo') -> list[dict]:
     package_id_by_prefix: dict[str, str] = {}
     id_by_symbol_name: dict[str, str] = {}
     occurrences_by_id: dict[str, int] = {}
+    module_name_by_file: dict[str, str] = {}
 
     def make_unique_id(candidate_id: str) -> str:
         count = occurrences_by_id.get(candidate_id, 0) + 1
@@ -69,6 +70,9 @@ def build_elements(graph: dict, repo_label: str = 'repo') -> list[dict]:
             parts = name.split('.')
             parent_id = ensure_package_chain(parts[:-1])
             node_id = make_unique_id(f'mod:{name}')
+            if node.get('file') is not None:
+                module_name_by_file[node['file']] = name
+            relative_path = name.replace('.', '/') + '.py'
         else:
             parent_name = name.rsplit('.', 1)[0]
             parent_id = id_by_symbol_name.get(parent_name)
@@ -78,6 +82,8 @@ def build_elements(graph: dict, repo_label: str = 'repo') -> list[dict]:
                 # rather than silently attaching the node to the wrong parent.
                 raise ValueError(f'no parent found for {kind} {name!r}')
             node_id = make_unique_id(f'sym:{name}')
+            module_name = module_name_by_file.get(node.get('file'))
+            relative_path = module_name.replace('.', '/') + '.py' if module_name else None
 
         depth_by_id[node_id] = depth_by_id[parent_id] + 1
         id_by_symbol_name[name] = node_id
@@ -88,6 +94,8 @@ def build_elements(graph: dict, repo_label: str = 'repo') -> list[dict]:
             'kind': kind,
             'parent': parent_id,
             'depth': depth_by_id[node_id],
+            'name': name,
+            'relative_path': relative_path,
             'file': node.get('file'),
             'docstring': node.get('docstring'),
             'lineno': node.get('lineno'),
@@ -134,3 +142,32 @@ def index_children(elements: list[dict]) -> dict[str, list[dict]]:
         if parent_id is not None:
             index.setdefault(parent_id, []).append(el)
     return index
+
+
+def ancestors_of(elements: list[dict], node_id: str) -> list[str]:
+    """Ids of `node_id`'s ancestors, immediate parent first, up to (but not
+    including) the repo root. Used to reveal a node that isn't currently
+    visible - expanding every id this returns makes `node_id` visible."""
+    parent_by_id = {el['data']['id']: el['data'].get('parent') for el in elements if el['data'].get('kind') != 'call'}
+
+    ancestors = []
+    parent_id = parent_by_id.get(node_id)
+    while parent_id is not None and parent_id != 'repo':
+        ancestors.append(parent_id)
+        parent_id = parent_by_id.get(parent_id)
+    return ancestors
+
+
+def callers_and_callees(elements: list[dict], node_id: str) -> tuple[list[str], list[str]]:
+    """Ids of every node with a resolved call edge into/out of `node_id`."""
+    callers = []
+    callees = []
+    for el in elements:
+        data = el['data']
+        if data.get('kind') != 'call':
+            continue
+        if data['target'] == node_id:
+            callers.append(data['source'])
+        if data['source'] == node_id:
+            callees.append(data['target'])
+    return callers, callees

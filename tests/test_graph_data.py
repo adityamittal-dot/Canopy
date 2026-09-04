@@ -1,4 +1,4 @@
-from explorer.graph_data import build_elements, children_of, index_children
+from explorer.graph_data import ancestors_of, build_elements, callers_and_callees, children_of, index_children
 
 
 def _by_id(elements, element_id):
@@ -217,3 +217,76 @@ def test_same_named_symbols_like_a_property_getter_and_setter_get_distinct_ids()
 
     linenos = {el['data']['lineno'] for el in x_elements}
     assert linenos == {2, 6}  # both occurrences kept, neither dropped
+
+
+def test_relative_path_for_top_level_module():
+    graph = _make_graph([
+        {'kind': 'module', 'name': 'main', 'file': '/tmp/abc123/main.py'},
+    ])
+    elements = build_elements(graph)
+
+    assert _by_id(elements, 'mod:main')['data']['relative_path'] == 'main.py'
+
+
+def test_relative_path_for_nested_module_and_its_symbols():
+    graph = _make_graph([
+        {'kind': 'module', 'name': 'pkg.sub.mod', 'file': '/tmp/abc123/pkg/sub/mod.py'},
+        {'kind': 'class', 'name': 'pkg.sub.mod.Widget', 'file': '/tmp/abc123/pkg/sub/mod.py'},
+        {'kind': 'function', 'name': 'pkg.sub.mod.Widget.render', 'file': '/tmp/abc123/pkg/sub/mod.py'},
+    ])
+    elements = build_elements(graph)
+
+    assert _by_id(elements, 'mod:pkg.sub.mod')['data']['relative_path'] == 'pkg/sub/mod.py'
+    assert _by_id(elements, 'sym:pkg.sub.mod.Widget')['data']['relative_path'] == 'pkg/sub/mod.py'
+    assert _by_id(elements, 'sym:pkg.sub.mod.Widget.render')['data']['relative_path'] == 'pkg/sub/mod.py'
+
+
+def test_relative_path_survives_dunder_init_module_names():
+    # _module_name() derives "pkg.__init__" for pkg/__init__.py - the
+    # reverse transform must round-trip that back correctly, not treat the
+    # dunder as ordinary package nesting.
+    graph = _make_graph([
+        {'kind': 'module', 'name': 'pkg.__init__', 'file': '/tmp/abc123/pkg/__init__.py'},
+    ])
+    elements = build_elements(graph)
+
+    assert _by_id(elements, 'mod:pkg.__init__')['data']['relative_path'] == 'pkg/__init__.py'
+
+
+def test_ancestors_of_walks_up_to_but_excludes_repo():
+    graph = _make_graph([
+        {'kind': 'module', 'name': 'pkg.mod', 'file': 'pkg/mod.py'},
+        {'kind': 'class', 'name': 'pkg.mod.Widget', 'file': 'pkg/mod.py'},
+        {'kind': 'function', 'name': 'pkg.mod.Widget.render', 'file': 'pkg/mod.py'},
+    ])
+    elements = build_elements(graph)
+
+    assert ancestors_of(elements, 'sym:pkg.mod.Widget.render') == [
+        'sym:pkg.mod.Widget', 'mod:pkg.mod', 'pkg:pkg',
+    ]
+    assert ancestors_of(elements, 'pkg:pkg') == []
+
+
+def test_callers_and_callees_reads_off_the_call_edges():
+    graph = _make_graph(
+        nodes=[
+            {'kind': 'module', 'name': 'mod', 'file': 'mod.py'},
+            {'kind': 'function', 'name': 'mod.a', 'file': 'mod.py'},
+            {'kind': 'function', 'name': 'mod.b', 'file': 'mod.py'},
+            {'kind': 'function', 'name': 'mod.c', 'file': 'mod.py'},
+        ],
+        edges=[
+            {'caller': 'mod.a', 'callee': 'mod.b', 'resolved': True},
+            {'caller': 'mod.c', 'callee': 'mod.b', 'resolved': True},
+            {'caller': 'mod.b', 'callee': 'mod.c', 'resolved': True},
+        ],
+    )
+    elements = build_elements(graph)
+
+    callers, callees = callers_and_callees(elements, 'sym:mod.b')
+    assert sorted(callers) == ['sym:mod.a', 'sym:mod.c']
+    assert callees == ['sym:mod.c']
+
+    no_callers, no_callees = callers_and_callees(elements, 'sym:mod.a')
+    assert no_callers == []
+    assert no_callees == ['sym:mod.b']
