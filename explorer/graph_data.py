@@ -164,3 +164,48 @@ def callers_and_callees(elements: list[dict], node_id: str) -> tuple[list[str], 
         if data['source'] == node_id:
             callees.append(data['target'])
     return callers, callees
+
+
+# parsing.walk already excludes .git/venv/node_modules/__pycache__ at parse
+# time (they're never even walked), so those never reach here at all. What's
+# left as "noise" for display purposes is test code and vendored/third-party
+# dependencies - still parsed and present in the data, just hidden by
+# default in the graph view (see explorer/dash_apps.py's hide-noise toggle).
+_NOISE_PACKAGE_NAMES = {
+    'test', 'tests', 'testing',
+    'vendor', 'vendored', 'third_party', 'thirdparty',
+    'site-packages', 'dist-packages', '.eggs',
+}
+
+
+def _is_noise_package_label(label: str) -> bool:
+    return label.lower() in _NOISE_PACKAGE_NAMES
+
+
+def _is_noise_module_filename(relative_path: str) -> bool:
+    filename = relative_path.rsplit('/', 1)[-1]
+    stem = filename.removesuffix('.py')
+    return stem.startswith('test_') or stem.endswith(('_test', '_tests'))
+
+
+def noise_ids(elements: list[dict]) -> set[str]:
+    """Ids of nodes that are noise (a test/vendor package or module) or
+    descend from one. Relies on the same parent-before-child ordering
+    invariant as build_elements (see module docstring) - a single
+    left-to-right pass over `elements` is enough to propagate a hidden
+    ancestor's status down to every descendant."""
+    noise: set[str] = set()
+    for el in elements:
+        data = el['data']
+        kind = data.get('kind')
+        if kind == 'call':
+            continue
+
+        is_own_noise = (
+            (kind == 'package' and _is_noise_package_label(data['label']))
+            or (kind == 'module' and data.get('relative_path') and _is_noise_module_filename(data['relative_path']))
+        )
+        if is_own_noise or data.get('parent') in noise:
+            noise.add(data['id'])
+
+    return noise

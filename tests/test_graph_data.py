@@ -1,4 +1,4 @@
-from explorer.graph_data import ancestors_of, build_elements, callers_and_callees, children_of, index_children
+from explorer.graph_data import ancestors_of, build_elements, callers_and_callees, children_of, index_children, noise_ids
 
 
 def _by_id(elements, element_id):
@@ -278,3 +278,81 @@ def test_callers_and_callees_reads_off_the_call_edges():
     no_callers, no_callees = callers_and_callees(elements, 'sym:mod.a')
     assert no_callers == []
     assert no_callees == ['sym:mod.b']
+
+
+def test_noise_ids_is_empty_for_a_repo_with_no_test_or_vendor_code():
+    graph = _make_graph([
+        {'kind': 'module', 'name': 'pkg.mod', 'file': 'pkg/mod.py', 'relative_path': 'pkg/mod.py'},
+        {'kind': 'function', 'name': 'pkg.mod.f', 'file': 'pkg/mod.py', 'relative_path': 'pkg/mod.py'},
+    ])
+    elements = build_elements(graph)
+
+    assert noise_ids(elements) == set()
+
+
+def test_noise_ids_marks_a_tests_package_and_everything_under_it():
+    graph = _make_graph([
+        {'kind': 'module', 'name': 'tests.test_widget', 'file': 'tests/test_widget.py',
+         'relative_path': 'tests/test_widget.py'},
+        {'kind': 'function', 'name': 'tests.test_widget.test_it_works', 'file': 'tests/test_widget.py',
+         'relative_path': 'tests/test_widget.py'},
+        {'kind': 'module', 'name': 'pkg.mod', 'file': 'pkg/mod.py', 'relative_path': 'pkg/mod.py'},
+    ])
+    elements = build_elements(graph)
+
+    noise = noise_ids(elements)
+    assert 'pkg:tests' in noise
+    assert 'mod:tests.test_widget' in noise
+    assert 'sym:tests.test_widget.test_it_works' in noise
+    assert 'mod:pkg.mod' not in noise
+    assert 'pkg:pkg' not in noise
+
+
+def test_noise_ids_marks_a_test_module_outside_a_tests_package():
+    # e.g. a top-level test_something.py without a dedicated tests/ package
+    graph = _make_graph([
+        {'kind': 'module', 'name': 'test_widget', 'file': 'test_widget.py', 'relative_path': 'test_widget.py'},
+        {'kind': 'function', 'name': 'test_widget.test_it_works', 'file': 'test_widget.py',
+         'relative_path': 'test_widget.py'},
+    ])
+    elements = build_elements(graph)
+
+    noise = noise_ids(elements)
+    assert 'mod:test_widget' in noise
+    assert 'sym:test_widget.test_it_works' in noise
+
+
+def test_noise_ids_marks_a_vendor_package():
+    graph = _make_graph([
+        {'kind': 'module', 'name': 'vendor.requests.api', 'file': 'vendor/requests/api.py',
+         'relative_path': 'vendor/requests/api.py'},
+    ])
+    elements = build_elements(graph)
+
+    noise = noise_ids(elements)
+    assert 'pkg:vendor' in noise
+    assert 'pkg:vendor.requests' in noise
+    assert 'mod:vendor.requests.api' in noise
+
+
+def test_noise_ids_is_case_insensitive():
+    graph = _make_graph([
+        {'kind': 'module', 'name': 'Tests.test_widget', 'file': 'Tests/test_widget.py',
+         'relative_path': 'Tests/test_widget.py'},
+    ])
+    elements = build_elements(graph)
+
+    assert 'pkg:Tests' in noise_ids(elements)
+
+
+def test_noise_ids_does_not_flag_a_module_that_merely_contains_test_as_a_substring():
+    # "latest.py" or a "testament" package should not be treated as noise -
+    # only an exact "test"/"tests"/"testing" segment, or a test_*.py/*_test.py
+    # filename convention, counts.
+    graph = _make_graph([
+        {'kind': 'module', 'name': 'latest', 'file': 'latest.py', 'relative_path': 'latest.py'},
+        {'kind': 'module', 'name': 'testament.mod', 'file': 'testament/mod.py', 'relative_path': 'testament/mod.py'},
+    ])
+    elements = build_elements(graph)
+
+    assert noise_ids(elements) == set()
