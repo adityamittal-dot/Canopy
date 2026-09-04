@@ -20,6 +20,7 @@
             {% if created %}Analyzed{% else %}Already cached{% endif %}
             {{ analysis.repo.name }} @ {{ analysis.commit_hash|slice:":7" }}
             — {{ analysis.graph.nodes|length }} nodes, {{ analysis.graph.edges|length }} edges.
+            <a href="{% url 'graph' analysis.id %}">View graph</a>
         </p>
         {% if not analysis.graph.nodes %}
             <p>No Python symbols found in this repo (empty, non-Python, or all files failed to parse).</p>

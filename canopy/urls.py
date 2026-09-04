@@ -24,4 +24,5 @@ urlpatterns = [
     path('django_plotly_dash/', include('django_plotly_dash.urls')),
     path('dash-test/', explorer_views.dash_test, name='dash_test'),
     path('analyze/', explorer_views.analyze, name='analyze'),
+    path('graph/<int:analysis_id>/', explorer_views.graph_view, name='graph'),
 ]

@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 from django.core.exceptions import ValidationError
 from django.core.validators import URLValidator
 from django.db import IntegrityError
-from django.shortcuts import render
+from django.shortcuts import get_object_or_404, render
 from django.views.decorators.http import require_http_methods
 
 from parsing.clone import CloneError, get_remote_head_commit
@@ -120,3 +120,11 @@ def analyze(request):
           context.update(_run_analysis(url))
 
   return render(request, 'explorer/analyze.html', context)
+
+
+def graph_view(request, analysis_id):
+  analysis = get_object_or_404(CommitAnalysis.objects.select_related('repo'), pk=analysis_id)
+  return render(request, 'explorer/graph.html', {
+    'analysis': analysis,
+    'initial_arguments': {'analysis-id-store': {'data': analysis.id}},
+  })

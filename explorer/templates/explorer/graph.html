@@ -1,0 +1,12 @@
+{% load plotly_dash %}
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Canopy — {{ analysis.repo.name }} graph</title>
+    {% plotly_header %}
+</head>
+<body>
+    <h1>{{ analysis.repo.name }} @ {{ analysis.commit_hash|slice:":7" }}</h1>
+    {% plotly_app name="RepoGraph" initial_arguments=initial_arguments %}
+</body>
+</html>
