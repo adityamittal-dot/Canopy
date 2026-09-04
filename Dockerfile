@@ -13,8 +13,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN python manage.py collectstatic --noinput
+# SECRET_KEY only needs to be *set* (any value) for collectstatic to import
+# settings.py at build time - the real value is injected at runtime.
+RUN SECRET_KEY=build-time-placeholder python manage.py collectstatic --noinput
 
 EXPOSE 8000
 
-CMD ["gunicorn", "canopy.wsgi:application", "--bind", "0.0.0.0:8000"]
+# Shell form (not exec-form JSON) so $PORT actually expands - Railway
+# assigns it dynamically rather than always using 8000. Migrations run on
+# every start; safe since Django migrations are idempotent.
+CMD python manage.py migrate --noinput && gunicorn canopy.wsgi:application --bind 0.0.0.0:${PORT:-8000}

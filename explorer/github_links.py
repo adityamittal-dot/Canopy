@@ -7,6 +7,7 @@ that wouldn't work.
 """
 
 import functools
+import os
 from urllib.parse import urlparse
 
 import requests
@@ -58,8 +59,13 @@ def _fetch_raw_file(repo_url: str, commit_hash: str, relative_path: str, timeout
     owner, repo = owner_repo
 
     raw_url = f'https://raw.githubusercontent.com/{owner}/{repo}/{commit_hash}/{relative_path}'
+    # Optional: an unauthenticated IP has a much lower allowance against
+    # GitHub's raw-content host than an authenticated one. GITHUB_TOKEN
+    # only needs public_repo (or no scopes at all) access.
+    token = os.environ.get('GITHUB_TOKEN')
+    headers = {'Authorization': f'Bearer {token}'} if token else {}
     try:
-        response = requests.get(raw_url, timeout=timeout)
+        response = requests.get(raw_url, headers=headers, timeout=timeout)
         response.raise_for_status()
     except requests.RequestException:
         return None

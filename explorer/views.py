@@ -2,6 +2,7 @@ import ipaddress
 import socket
 from urllib.parse import urlparse
 
+from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.core.validators import URLValidator
 from django.db import IntegrityError
@@ -14,6 +15,40 @@ from parsing.pipeline import analyze_repo
 from .models import CommitAnalysis, Repo
 
 _validate_url = URLValidator(schemes=['http', 'https'])
+
+# Analysis clones a caller-supplied repo server-side, so it's a real
+# resource-exhaustion vector without some limit - 5 submissions/minute per
+# IP is generous for legitimate use (a cache hit on an already-analyzed
+# repo doesn't even need this) but blocks a client from hammering the
+# clone/parse pipeline.
+#
+# Uses Django's default cache (LocMemCache - process-local, no separate
+# service to run), so this is only correctly enforced with a single
+# gunicorn worker/replica, which is the deployed default (no --workers or
+# WEB_CONCURRENCY set). Scaling to multiple workers or replicas would
+# split traffic across processes that don't share this counter, silently
+# multiplying the effective limit - move to a shared cache (e.g. Redis) if
+# that becomes real.
+_RATE_LIMIT_WINDOW_SECONDS = 60
+_RATE_LIMIT_MAX_REQUESTS = 5
+
+
+def _client_ip(request) -> str:
+  # Railway (and most PaaS hosts) put the app behind a proxy, so the real
+  # client address arrives via X-Forwarded-For rather than REMOTE_ADDR.
+  forwarded = request.META.get('HTTP_X_FORWARDED_FOR')
+  if forwarded:
+    return forwarded.split(',')[0].strip()
+  return request.META.get('REMOTE_ADDR', 'unknown')
+
+
+def _is_rate_limited(request) -> bool:
+  key = f'analyze-rate:{_client_ip(request)}'
+  count = cache.get(key, 0)
+  if count >= _RATE_LIMIT_MAX_REQUESTS:
+    return True
+  cache.set(key, count + 1, timeout=_RATE_LIMIT_WINDOW_SECONDS)
+  return False
 
 
 def dash_test(request):
@@ -107,6 +142,8 @@ def analyze(request):
 
     if not url:
       context['error'] = 'Enter a repo URL.'
+    elif _is_rate_limited(request):
+      context['error'] = 'Too many requests - please wait a minute and try again.'
     else:
       try:
         _validate_url(url)
