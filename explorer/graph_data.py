@@ -13,7 +13,8 @@ segment off its qualified name) has already been assigned an element id by
 the time that node is processed.
 """
 
-from parsing.resolve import _bare_name as _label
+def _label(qualified_name: str) -> str:
+    return qualified_name.rsplit('.', 1)[-1]
 
 
 def build_elements(graph: dict, repo_label: str = 'repo') -> list[dict]:

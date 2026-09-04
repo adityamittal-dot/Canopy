@@ -117,13 +117,29 @@ def expand_on_click(tapped, expanded, elements):
   Input('show-calls', 'value'),
 )
 def render_visible_elements(elements, expanded, show_calls_value):
+  # children_by_parent is needed unconditionally, not just when something is
+  # expanded: a function that itself contains a nested class/function (a
+  # locally-defined class, or a nested def) is a container, not a leaf, and
+  # must stay visible by default so its children aren't left with a parent
+  # that got hidden - Cytoscape requires every visible node's parent to also
+  # be visible. Only childless ("leaf") functions are hidden by default.
+  children_by_parent = index_children(elements)
+
+  hidden_ids: set[str] = set()
+  for el in elements:
+    data = el['data']
+    if data.get('kind') == 'call':
+      continue
+    is_leaf_function = data.get('kind') in DEFAULT_HIDDEN_KINDS and not children_by_parent.get(data['id'])
+    if is_leaf_function or data.get('parent') in hidden_ids:
+      hidden_ids.add(data['id'])
+
   visible_ids = {
     el['data']['id']
     for el in elements
-    if el['data'].get('kind') not in DEFAULT_HIDDEN_KINDS | {'call'}
+    if el['data'].get('kind') != 'call' and el['data']['id'] not in hidden_ids
   }
 
-  children_by_parent = index_children(elements)
   for parent_id in expanded:
     visible_ids |= {c['data']['id'] for c in children_by_parent.get(parent_id, [])}
 
