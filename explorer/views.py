@@ -21,6 +21,14 @@ _validate_url = URLValidator(schemes=['http', 'https'])
 # IP is generous for legitimate use (a cache hit on an already-analyzed
 # repo doesn't even need this) but blocks a client from hammering the
 # clone/parse pipeline.
+#
+# Uses Django's default cache (LocMemCache - process-local, no separate
+# service to run), so this is only correctly enforced with a single
+# gunicorn worker/replica, which is the deployed default (no --workers or
+# WEB_CONCURRENCY set). Scaling to multiple workers or replicas would
+# split traffic across processes that don't share this counter, silently
+# multiplying the effective limit - move to a shared cache (e.g. Redis) if
+# that becomes real.
 _RATE_LIMIT_WINDOW_SECONDS = 60
 _RATE_LIMIT_MAX_REQUESTS = 5
 
