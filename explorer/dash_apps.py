@@ -63,6 +63,10 @@ graph_app.layout = html.Div(className='cy-app', children=[
   dcc.Store(id='show-edges-store', data=True),
   dcc.Store(id='hide-tests-store', data=True),
   dcc.Store(id='hide-vendor-store', data=True),
+  # Write-only target for the clientside selection-highlight callback below
+  # (a clientside_callback needs some Output to write to, even though
+  # nothing ever reads this one back).
+  dcc.Store(id='selection-sync-store', data=None),
 
   html.Div(className='cy-shell', children=[
     html.Div(id='cy-header'),
@@ -362,7 +366,10 @@ def _click_id(action, node_id):
 def _fn_pill(data, selected_id):
   node_id = data['id']
   className = 'cy-fn-pill' + (' is-selected' if node_id == selected_id else '')
-  return html.Button(data['label'], id=_click_id('select', node_id), className=className, title=data.get('name', data['label']))
+  return html.Button(
+    data['label'], id=_click_id('select', node_id), className=className, title=data.get('name', data['label']),
+    **{'data-node-id': node_id},
+  )
 
 
 def _ghost_box(data, category, elements):
@@ -427,7 +434,7 @@ def _render_container(node_id, elements, children_index, expanded, test_noise, v
     html.Button([
       html.Span(className='cy-dot'),
       html.Span(f"{kind} / {data['label']}", className='name'),
-    ], id=_click_id('select', node_id), className=label_className),
+    ], id=_click_id('select', node_id), className=label_className, **{'data-node-id': node_id}),
   ]
   if function_children:
     header_children.append(html.Button(
@@ -450,7 +457,16 @@ def _render_container(node_id, elements, children_index, expanded, test_noise, v
   Input('expanded-store', 'data'),
   Input('hide-tests-store', 'data'),
   Input('hide-vendor-store', 'data'),
-  Input('selected-node-store', 'data'),
+  # State, not Input: selecting a node is by far the most frequent
+  # interaction, and doesn't change which boxes/pills exist - only which
+  # one is highlighted. Re-rendering and re-serializing the *entire* tree
+  # (hundreds of KB for a mid-size repo) on every single click would make
+  # every click pay for a full-tree round-trip. A clientside callback
+  # (see the clientside_callback below) handles highlighting instantly in
+  # the browser instead; this State is only here so a structural
+  # re-render (expand/collapse, filter toggle) still bakes in whichever
+  # node is currently selected.
+  State('selected-node-store', 'data'),
 )
 def render_tree(elements, expanded, hide_tests, hide_vendor, selected_id):
   if not elements:
@@ -471,6 +487,36 @@ def render_tree(elements, expanded, hide_tests, hide_vendor, selected_id):
   ]
   boxes.extend(_ghost_box(ghost_data, category, elements) for ghost_data, category in ghosts)
   return html.Div(boxes, className='cy-grid')
+
+
+# Runs entirely in the browser, no server round-trip: clears whichever
+# box/pill was previously highlighted and highlights the one matching
+# selected-node-store, by looking up the plain `data-node-id` attribute
+# rather than parsing Dash's own pattern-matching id encoding.
+graph_app.clientside_callback(
+  """
+  function(selectedId) {
+    document.querySelectorAll('.cy-box.is-selected, .cy-box__label.is-selected, .cy-fn-pill.is-selected')
+      .forEach(function(el) { el.classList.remove('is-selected'); });
+
+    if (selectedId) {
+      var escaped = CSS.escape(String(selectedId));
+      var label = document.querySelector('.cy-box__label[data-node-id="' + escaped + '"]');
+      if (label) {
+        label.classList.add('is-selected');
+        var box = label.closest('.cy-box');
+        if (box) { box.classList.add('is-selected'); }
+      }
+      var pill = document.querySelector('.cy-fn-pill[data-node-id="' + escaped + '"]');
+      if (pill) { pill.classList.add('is-selected'); }
+    }
+
+    return window.dash_clientside.no_update;
+  }
+  """,
+  Output('selection-sync-store', 'data'),
+  Input('selected-node-store', 'data'),
+)
 
 
 # --- breadcrumb + toast --------------------------------------------------------

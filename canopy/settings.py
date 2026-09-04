@@ -43,6 +43,11 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    # First so its process_response runs last, after every other
+    # middleware has finished writing the body - Dash's JSON callback
+    # payloads for a large repo tree run several hundred KB and are
+    # mostly repeated key names, so they compress very well.
+    'django.middleware.gzip.GZipMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
