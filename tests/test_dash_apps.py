@@ -88,28 +88,37 @@ def test_show_calls_only_includes_edges_between_visible_nodes():
 
 
 def test_resolve_navigation_target_from_a_direct_graph_tap():
-    assert _resolve_navigation_target('repo-graph', {'id': 'sym:mod.Widget'}) == 'sym:mod.Widget'
+    assert _resolve_navigation_target('repo-graph', None, {'id': 'sym:mod.Widget'}) == 'sym:mod.Widget'
 
 
 def test_resolve_navigation_target_from_an_untapped_graph_event():
-    assert _resolve_navigation_target('repo-graph', None) is None
+    assert _resolve_navigation_target('repo-graph', None, None) is None
 
 
-def test_resolve_navigation_target_from_a_nav_button():
-    triggered_id = {'type': 'nav-btn', 'index': 'caller:sym:mod.Widget.render'}
-    assert _resolve_navigation_target(triggered_id, None) == 'sym:mod.Widget.render'
+def test_resolve_navigation_target_from_a_real_nav_button_click():
+    triggered_id = {'type': 'nav-btn', 'role': 'caller', 'target': 'sym:mod.Widget.render'}
+    assert _resolve_navigation_target(triggered_id, 1, None) == 'sym:mod.Widget.render'
 
 
-def test_resolve_navigation_target_from_a_callee_button_with_a_colon_in_the_id():
-    # target ids themselves contain colons (e.g. "sym:..."), so the role
-    # prefix must only ever strip the first colon, not split on all of them.
-    triggered_id = {'type': 'nav-btn', 'index': 'callee:sym:mod.Widget.render'}
-    assert _resolve_navigation_target(triggered_id, None) == 'sym:mod.Widget.render'
+def test_resolve_navigation_target_from_a_callee_button_click():
+    triggered_id = {'type': 'nav-btn', 'role': 'callee', 'target': 'sym:mod.Widget.render'}
+    assert _resolve_navigation_target(triggered_id, 1, None) == 'sym:mod.Widget.render'
+
+
+def test_resolve_navigation_target_ignores_a_freshly_mounted_unclicked_nav_button():
+    # Dash's ALL-pattern-matching Input re-fires this callback whenever the
+    # *set* of matched nav-btn components changes (e.g. render_detail_panel
+    # mounting a fresh batch for a newly-selected node), not just on a real
+    # click - the freshly-mounted button's n_clicks is still its initial 0
+    # in that case, which is exactly what this must NOT treat as a click.
+    triggered_id = {'type': 'nav-btn', 'role': 'callee', 'target': 'sym:mod.Widget.render'}
+    assert _resolve_navigation_target(triggered_id, 0, None) is None
+    assert _resolve_navigation_target(triggered_id, None, None) is None
 
 
 def test_resolve_navigation_target_returns_none_for_anything_else():
-    assert _resolve_navigation_target(None, None) is None
-    assert _resolve_navigation_target('some-other-component', {'id': 'x'}) is None
+    assert _resolve_navigation_target(None, None, None) is None
+    assert _resolve_navigation_target('some-other-component', 1, {'id': 'x'}) is None
 
 
 def test_compute_navigation_update_reveals_ancestors_of_an_unexpanded_target():

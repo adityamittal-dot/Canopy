@@ -6,6 +6,7 @@ return None for a non-GitHub repo url rather than guessing at a URL shape
 that wouldn't work.
 """
 
+import functools
 from urllib.parse import urlparse
 
 import requests
@@ -41,13 +42,16 @@ def github_blob_url(repo_url: str, commit_hash: str, relative_path: str,
     return url
 
 
-def fetch_source_snippet(repo_url: str, commit_hash: str, relative_path: str,
-                          lineno: int | None = None, end_lineno: int | None = None,
-                          timeout: float = 5.0) -> str | None:
-    """Fetch a file (or a line-range slice of it) from GitHub's raw content
-    API. Returns None on any failure (non-GitHub url, network error, missing
-    file) - the caller is expected to show a "source unavailable" fallback
-    rather than treat this as fatal."""
+@functools.lru_cache(maxsize=256)
+def _fetch_raw_file(repo_url: str, commit_hash: str, relative_path: str, timeout: float = 5.0) -> str | None:
+    """The network part of fetch_source_snippet, cached: content at a fixed
+    commit hash is immutable, so the same (repo_url, commit_hash,
+    relative_path) triple can never legitimately return different content -
+    no staleness risk. A failed fetch (bad host, timeout, missing file) also
+    gets cached as None for the rest of the process's lifetime rather than
+    retried on every click; acceptable for a transient blip at MVP scale,
+    but means a genuinely-flaky failure won't self-heal without a restart.
+    """
     owner_repo = parse_github_owner_repo(repo_url)
     if owner_repo is None:
         return None
@@ -59,9 +63,22 @@ def fetch_source_snippet(repo_url: str, commit_hash: str, relative_path: str,
         response.raise_for_status()
     except requests.RequestException:
         return None
+    return response.text
+
+
+def fetch_source_snippet(repo_url: str, commit_hash: str, relative_path: str,
+                          lineno: int | None = None, end_lineno: int | None = None,
+                          timeout: float = 5.0) -> str | None:
+    """Fetch a file (or a line-range slice of it) from GitHub's raw content
+    API. Returns None on any failure (non-GitHub url, network error, missing
+    file) - the caller is expected to show a "source unavailable" fallback
+    rather than treat this as fatal."""
+    text = _fetch_raw_file(repo_url, commit_hash, relative_path, timeout)
+    if text is None:
+        return None
 
     if not lineno or not end_lineno or end_lineno < lineno:
-        return response.text
+        return text
 
-    lines = response.text.splitlines()
+    lines = text.splitlines()
     return '\n'.join(lines[lineno - 1:end_lineno])

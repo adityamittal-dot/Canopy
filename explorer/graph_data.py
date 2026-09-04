@@ -34,7 +34,6 @@ def build_elements(graph: dict, repo_label: str = 'repo') -> list[dict]:
     package_id_by_prefix: dict[str, str] = {}
     id_by_symbol_name: dict[str, str] = {}
     occurrences_by_id: dict[str, int] = {}
-    module_name_by_file: dict[str, str] = {}
 
     def make_unique_id(candidate_id: str) -> str:
         count = occurrences_by_id.get(candidate_id, 0) + 1
@@ -70,9 +69,6 @@ def build_elements(graph: dict, repo_label: str = 'repo') -> list[dict]:
             parts = name.split('.')
             parent_id = ensure_package_chain(parts[:-1])
             node_id = make_unique_id(f'mod:{name}')
-            if node.get('file') is not None:
-                module_name_by_file[node['file']] = name
-            relative_path = name.replace('.', '/') + '.py'
         else:
             parent_name = name.rsplit('.', 1)[0]
             parent_id = id_by_symbol_name.get(parent_name)
@@ -82,8 +78,6 @@ def build_elements(graph: dict, repo_label: str = 'repo') -> list[dict]:
                 # rather than silently attaching the node to the wrong parent.
                 raise ValueError(f'no parent found for {kind} {name!r}')
             node_id = make_unique_id(f'sym:{name}')
-            module_name = module_name_by_file.get(node.get('file'))
-            relative_path = module_name.replace('.', '/') + '.py' if module_name else None
 
         depth_by_id[node_id] = depth_by_id[parent_id] + 1
         id_by_symbol_name[name] = node_id
@@ -95,8 +89,7 @@ def build_elements(graph: dict, repo_label: str = 'repo') -> list[dict]:
             'parent': parent_id,
             'depth': depth_by_id[node_id],
             'name': name,
-            'relative_path': relative_path,
-            'file': node.get('file'),
+            'relative_path': node.get('relative_path'),
             'docstring': node.get('docstring'),
             'lineno': node.get('lineno'),
             'end_lineno': node.get('end_lineno'),

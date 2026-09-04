@@ -219,38 +219,26 @@ def test_same_named_symbols_like_a_property_getter_and_setter_get_distinct_ids()
     assert linenos == {2, 6}  # both occurrences kept, neither dropped
 
 
-def test_relative_path_for_top_level_module():
+def test_relative_path_passes_through_from_the_pipeline_node_unchanged():
+    # relative_path is computed once by parsing.pipeline (single source of
+    # truth - see tests/test_pipeline.py) and just carried through here.
     graph = _make_graph([
-        {'kind': 'module', 'name': 'main', 'file': '/tmp/abc123/main.py'},
+        {'kind': 'module', 'name': 'pkg.mod', 'file': '/tmp/abc123/pkg/mod.py', 'relative_path': 'pkg/mod.py'},
+        {'kind': 'function', 'name': 'pkg.mod.f', 'file': '/tmp/abc123/pkg/mod.py', 'relative_path': 'pkg/mod.py'},
     ])
     elements = build_elements(graph)
 
-    assert _by_id(elements, 'mod:main')['data']['relative_path'] == 'main.py'
+    assert _by_id(elements, 'mod:pkg.mod')['data']['relative_path'] == 'pkg/mod.py'
+    assert _by_id(elements, 'sym:pkg.mod.f')['data']['relative_path'] == 'pkg/mod.py'
 
 
-def test_relative_path_for_nested_module_and_its_symbols():
+def test_relative_path_is_none_when_the_pipeline_node_lacks_it():
     graph = _make_graph([
-        {'kind': 'module', 'name': 'pkg.sub.mod', 'file': '/tmp/abc123/pkg/sub/mod.py'},
-        {'kind': 'class', 'name': 'pkg.sub.mod.Widget', 'file': '/tmp/abc123/pkg/sub/mod.py'},
-        {'kind': 'function', 'name': 'pkg.sub.mod.Widget.render', 'file': '/tmp/abc123/pkg/sub/mod.py'},
+        {'kind': 'module', 'name': 'mod', 'file': 'mod.py'},
     ])
     elements = build_elements(graph)
 
-    assert _by_id(elements, 'mod:pkg.sub.mod')['data']['relative_path'] == 'pkg/sub/mod.py'
-    assert _by_id(elements, 'sym:pkg.sub.mod.Widget')['data']['relative_path'] == 'pkg/sub/mod.py'
-    assert _by_id(elements, 'sym:pkg.sub.mod.Widget.render')['data']['relative_path'] == 'pkg/sub/mod.py'
-
-
-def test_relative_path_survives_dunder_init_module_names():
-    # _module_name() derives "pkg.__init__" for pkg/__init__.py - the
-    # reverse transform must round-trip that back correctly, not treat the
-    # dunder as ordinary package nesting.
-    graph = _make_graph([
-        {'kind': 'module', 'name': 'pkg.__init__', 'file': '/tmp/abc123/pkg/__init__.py'},
-    ])
-    elements = build_elements(graph)
-
-    assert _by_id(elements, 'mod:pkg.__init__')['data']['relative_path'] == 'pkg/__init__.py'
+    assert _by_id(elements, 'mod:mod')['data']['relative_path'] is None
 
 
 def test_ancestors_of_walks_up_to_but_excludes_repo():

@@ -108,19 +108,27 @@ def load_elements(analysis_id):
   return elements, status, repo_meta
 
 
-def _resolve_navigation_target(triggered_id, tapped):
-  """Given Dash's `callback_context.triggered_id` and the tapNodeData
-  payload, return the node id that should become selected/revealed, or
-  None if this invocation shouldn't do anything (e.g. the initial call,
-  or an untapped/empty event)."""
+def _resolve_navigation_target(triggered_id, triggered_value, tapped):
+  """Given Dash's `callback_context.triggered_id`/the triggering prop's
+  value, and the tapNodeData payload, return the node id that should
+  become selected/revealed, or None if this invocation shouldn't do
+  anything (e.g. the initial call, an untapped/empty event, or - see
+  below - a nav-btn that wasn't actually clicked).
+
+  A pattern-matching ALL input re-fires the callback not only on a real
+  click but also whenever the *set* of matched components changes - e.g.
+  render_detail_panel mounting a fresh batch of caller/callee buttons for
+  a newly-selected node. Dash reports one of those freshly-mounted (never
+  clicked) buttons as the trigger in that case too, with its n_clicks at
+  the value it was just created with (0). Only a real click increments
+  n_clicks, so requiring a truthy triggered_value is what tells the two
+  apart - without it, selecting a node can spuriously auto-navigate to
+  one of its own callees, which can cascade further.
+  """
   if triggered_id == 'repo-graph':
     return tapped.get('id') if tapped else None
   if isinstance(triggered_id, dict) and triggered_id.get('type') == 'nav-btn':
-    # index is "role:target_id" (see _nav_button) - a node that is both a
-    # caller and a callee of the selected node (mutual recursion) would
-    # otherwise need two buttons with the identical id "target_id".
-    raw_index = triggered_id.get('index') or ''
-    return raw_index.split(':', 1)[1] if ':' in raw_index else None
+    return triggered_id.get('target') if triggered_value else None
   return None
 
 
@@ -148,18 +156,20 @@ def _compute_navigation_update(target_id, expanded, elements):
   Output('expanded-store', 'data'),
   Output('selected-node-store', 'data'),
   Input('repo-graph', 'tapNodeData'),
-  Input({'type': 'nav-btn', 'index': dash.ALL}, 'n_clicks'),
+  Input({'type': 'nav-btn', 'role': dash.ALL, 'target': dash.ALL}, 'n_clicks'),
   State('expanded-store', 'data'),
   State('elements-store', 'data'),
+  State('selected-node-store', 'data'),
   prevent_initial_call=True,
 )
-def navigate(tapped, _nav_clicks, expanded, elements):
-  target_id = _resolve_navigation_target(dash.callback_context.triggered_id, tapped)
-  new_expanded, selected_id = _compute_navigation_update(target_id, expanded, elements)
+def navigate(tapped, _nav_clicks, expanded, elements, currently_selected):
+  triggered = dash.callback_context.triggered[0] if dash.callback_context.triggered else {}
+  target_id = _resolve_navigation_target(dash.callback_context.triggered_id, triggered.get('value'), tapped)
 
-  if selected_id is None:
+  if target_id is None or target_id == currently_selected:
     return dash.no_update, dash.no_update
 
+  new_expanded, selected_id = _compute_navigation_update(target_id, expanded, elements)
   return (new_expanded if new_expanded is not None else dash.no_update), selected_id
 
 
@@ -211,13 +221,14 @@ def _find_element(elements, node_id):
 
 
 def _nav_button(role, target_id, elements):
-  # index is "role:target_id", not just target_id - a node that is both a
-  # caller and a callee of the selected node (mutual recursion) needs two
-  # distinct buttons, and Dash requires every component id to be unique.
+  # id carries role and target as separate keys, not encoded into one
+  # string - a node that is both a caller and a callee of the selected
+  # node (mutual recursion) needs two distinct buttons, and Dash requires
+  # every component id to be unique.
   target = _find_element(elements, target_id)
   label = target['data']['label'] if target else target_id
   title = target['data'].get('name', target_id) if target else target_id
-  return html.Button(label, id={'type': 'nav-btn', 'index': f'{role}:{target_id}'}, title=title, n_clicks=0)
+  return html.Button(label, id={'type': 'nav-btn', 'role': role, 'target': target_id}, title=title, n_clicks=0)
 
 
 @graph_app.callback(
