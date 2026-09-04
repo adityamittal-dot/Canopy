@@ -16,10 +16,12 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
+from django.views.generic import RedirectView
 
 from explorer import views as explorer_views
 
 urlpatterns = [
+    path('', RedirectView.as_view(pattern_name='analyze', permanent=False)),
     path('admin/', admin.site.urls),
     path('django_plotly_dash/', include('django_plotly_dash.urls')),
     path('dash-test/', explorer_views.dash_test, name='dash_test'),
