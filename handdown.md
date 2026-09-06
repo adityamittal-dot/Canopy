@@ -1,62 +1,95 @@
 # Canopy — Handoff
 
-_Last updated: 2026-09-03_
+_Last updated: 2026-09-06_
 
 ## What this is
 
-Paste a GitHub repo URL in, get a hierarchical, explorable diagram of the codebase: repo -> modules -> files -> classes -> functions, down to individual functions as leaf nodes, with callers/callees shown for each one. See `README.md` for the full pitch, competitive landscape, and tech stack rationale; `canopy-notes.md` for the original planning doc.
+Paste a GitHub repo URL in, get a hierarchical, explorable diagram of the codebase: repo -> packages -> modules -> classes -> functions, down to individual functions as leaf nodes, with callers/callees shown for each one. See `README.md` for the full pitch, competitive landscape, and tech stack rationale; `canopy-notes.md` for the original planning doc.
 
-## Current status: parsing engine complete, Django app not started
+## Current status: live and deployed
 
-The **entire parsing pipeline is built, tested, and merged into `dev`** — this is a pure-Python, Django-free layer that takes a repo URL and produces the full structural graph as data. Nothing beyond a bare Django scaffold exists yet for the actual web app / visualization.
+**<https://canopy-v7hb.onrender.com/>** — Render web service (Docker) + Render managed Postgres. The bare domain redirects to `/analyze/`, the dashboard/landing page.
+
+Every phase in the original roadmap is done: parsing engine, Django app, exploration features (search/noise filters/cross-cutting caller-callee view), UI redesign, and deployment.
 
 ### What's built (`parsing/` package)
 
+Unchanged since the parsing engine was completed — still a pure-Python, Django-free layer.
+
 | File | What it does |
 |---|---|
-| `clone.py` | `clone_repo(url)` — shallow `git clone --depth 1` into a temp dir, returns `(local_path, commit_hash)`. Raises `CloneError` on failure instead of a raw traceback. |
+| `clone.py` | `clone_repo(url)` — shallow `git clone --depth 1` into a temp dir, returns `(local_path, commit_hash)`. Raises `CloneError` on failure instead of a raw traceback. Also `get_remote_head_commit(url)` — `git ls-remote`, no full clone, used for the cache-check before deciding whether to re-analyze. |
 | `walk.py` | `find_python_files(root)` — walks a directory, returns every `.py` file path. Prunes `.git`/`venv`/`node_modules`/`__pycache__`/hidden dirs during the walk (not after), so it never descends into them. |
 | `parse.py` | `parse_file(path)` / `parse_files(paths)` — reads via `tokenize.open` (respects PEP 263 encoding declarations) and runs `ast.parse()`. Batch version keeps going past individual failures, returns `(successes, failures)` separately. |
 | `extract.py` | The core. `Symbol` dataclass (kind, name, file, docstring, lineno, end_lineno, calls, complexity) + `SymbolVisitor`, an `ast.NodeVisitor` that walks a module once and records every class/function definition, including nesting, via a scope stack for correct qualified names. |
 | `calls.py` | `extract_calls(node)` — walks a function's body for `Call` nodes, returns dotted names (`self.foo.bar`). Stops at nested def boundaries so a nested function's calls aren't misattributed. |
-| `imports.py` | `extract_imports(tree)` — every `import`/`from...import` as a dotted string, including relative imports (`.pkg.x`, `..pkg.x`). Not used for resolution yet, just captured. |
+| `imports.py` | `extract_imports(tree)` — every `import`/`from...import` as a dotted string, including relative imports (`.pkg.x`, `..pkg.x`). |
 | `symbol_table.py` | `build_symbol_table(symbols)` — flattens every file's symbols into one `{qualified_name: Symbol}` dict spanning the repo. |
-| `resolve.py` | `resolve_calls(table)` — the call-graph builder. Matches by bare (last-component) name; same-file candidates preferred over repo-wide. Repo-wide fallback is restricted to calls that look local (bare names or `self.`/`cls.`-prefixed) — a dotted call into an imported module won't get guessed at. Unmatched calls become explicit unresolved edges (`callee=None`), never dropped. |
-| `metrics.py` | `compute_loc`, `compute_complexity` (1 + branches: if/for/while/except/boolean-operator, stops at nested defs), `compute_fan_in_out` (from resolved edges only). |
+| `resolve.py` | `resolve_calls(table)` — the call-graph builder. Matches by bare (last-component) name; same-file candidates preferred over repo-wide. Repo-wide fallback restricted to calls that look local. Unmatched calls become explicit unresolved edges (`callee=None`), never dropped. |
+| `metrics.py` | `compute_loc`, `compute_complexity` (1 + branches, stops at nested defs), `compute_fan_in_out` (from resolved edges only). |
 | `pipeline.py` | `analyze_repo(url)` — orchestrates all of the above into one call. Returns `{commit_hash, parse_failures, nodes, edges, imports}`, fully JSON-serializable. |
-| `scripts/dump_symbols.py` | CLI: `python -m scripts.dump_symbols <file> --module-name x` dumps one file's extracted symbols as JSON. Useful for spot-checking. |
+| `scripts/dump_symbols.py` | CLI: `python -m scripts.dump_symbols <file> --module-name x` dumps one file's extracted symbols as JSON. |
 
-**Test suite:** 26 tests in `tests/`, covering every module above plus fixtures for edge cases (decorators, lambdas, comprehensions, dunders, async, f-strings, walrus operator, `match`/`case`). Run with:
-```
-python -m pytest tests/ -v
-```
+**Known limitation, not fixed:** call resolution matches by bare method/function name — two different classes with an identically-named method in the same file can still collide. Cross-file collisions with common names are mitigated (`resolve.py`'s `_looks_local` check); same-file collisions remain a real, accepted gap.
 
-### Validated against real code
+### Django app (`explorer/`)
 
-Ran `analyze_repo` end-to-end against `pallets/flask`: 0 parse failures across the entire repo, 1705 symbols extracted, 3282 call sites found, ~20% resolved (the rest are legitimately external stdlib/third-party calls, correctly left unresolved rather than guessed).
+- `explorer/models.py`: `Repo` (url, name, created_at) and `CommitAnalysis` (repo FK, commit_hash, graph JSONField, unique on repo+commit_hash) — this is the analysis cache.
+- `explorer/views.py`: `analyze` (accepts a URL, checks the remote HEAD commit against a cached `CommitAnalysis` before re-running the pipeline, has SSRF guards against private/loopback hosts, and a per-IP rate limit of 5 submissions/minute) and `graph_view` (renders the Dash-embedded explorer for one analysis).
+- `explorer/dash_apps.py`: the interactive explorer itself — see "UI redesign" below.
+- `explorer/github_links.py`: builds GitHub blob deep-links and fetches live source snippets from `raw.githubusercontent.com` for the detail panel (optional `GITHUB_TOKEN` env var raises the request allowance).
 
-### Known limitation, not fixed
+### UI redesign
 
-Call resolution matches by bare method/function name. Two different classes with an identically-named method **in the same file** can still collide (whichever is found first in the symbol table wins) — this needs class-scoped resolution to fix properly, which wasn't done. Cross-file collisions with common names were mitigated (see `resolve.py`'s `_looks_local` check) but same-file collisions remain a real, accepted gap.
+The original Cytoscape.js graph view was fully replaced with a nested box/pill tree (repo -> packages -> modules -> classes -> functions), traced detail-for-detail from a user-supplied reference design (scraped with Playwright — computed styles, raw stylesheet rules, rendered DOM/class structure) rather than an original or AI-generated palette.
 
-## Django app: bare scaffold only
+- `explorer/static/explorer/canopy.css` / `landing.css`: hand-written CSS design system (no build step) — OKLCH color tokens, JetBrains Mono/IBM Plex Mono typography, component recipes for boxes, pills, breadcrumbs, toasts, the detail panel. Loaded via `DjangoDash`'s `external_stylesheets` constructor arg, not Dash's `assets/` folder convention (confirmed non-functional under `django-plotly-dash`, which never forwards a custom `assets_folder`).
+- Packages/modules/classes always render in full; only each container's function-pill list collapses behind an expand toggle. Two independent filters (tests, vendored deps) render matching subtrees as dimmed "ghost" placeholders rather than omitting them silently.
+- Three integration bugs specific to `django-plotly-dash`, only reachable through a real browser click (never through calling the pure helper functions directly): the iframe embed defaulting to a squeezed 10%-aspect-ratio sliver (`{% plotly_app %}`'s `ratio=0.1` default — fixed with an explicit `height="100vh"`), `django-plotly-dash`'s `CallbackContext` shim missing Dash's `triggered_id` convenience property (fixed with a `_parse_triggered()` helper that parses the component id out of `callback_context.triggered` by hand), and top-level noise packages disappearing instead of ghosting (fixed by unifying `render_tree`'s top-level loop with `_render_container`'s nested-child logic via a shared `_partition_children` helper).
 
-- `canopy/` (project) + `explorer/` (app) exist via `django-admin startproject`/`startapp`, wired into `INSTALLED_APPS`.
-- `explorer/models.py` has `Repo` (url, name, created_at) and `CommitAnalysis` (repo FK, commit_hash, graph JSONField, created_at, unique_together on repo+commit_hash) — hand-written by the project owner, migrated successfully against Postgres.
-- `explorer/admin.py` is still empty boilerplate — models aren't registered yet.
-- `django-plotly-dash` is installed (`requirements.txt`) but **not** wired into `INSTALLED_APPS`/middleware/URLs yet.
-- No views, no URLs beyond `/admin/`, no templates, no Dash app, nothing connecting `parsing/` to the Django app at all yet.
+### Performance
+
+Profiled against a live `pallets/flask` analysis (1733 nodes) and found selecting a node — the single most frequent interaction — was re-rendering and re-serializing the *entire* tree server-side (an ~90-100KB Dash JSON payload per click), because `selected-node-store` was a Dash `Input` on `render_tree` purely to toggle an `is-selected` class.
+
+Fixed by moving selection highlighting to a Dash `clientside_callback` (pure JS, no server round-trip) that toggles the class directly via a plain `data-node-id` attribute on the box/pill buttons. `render_tree` keeps the selected id as a `State` (so a structural re-render — expand/collapse, filter toggle — still bakes in the right highlight) but no longer treats a selection change as a reason to rebuild the whole tree. Also added `GZipMiddleware` — Dash's JSON payloads are mostly repeated key names and compress well.
+
+Not done: lazy-rendering containers themselves (currently only function-pill lists collapse; packages/modules/classes always render in full, which is the biggest remaining lever for very large repos).
+
+### Deployment
+
+Live on **Render**: a Docker-based web service + Render's managed Postgres plugin, connected to the `dev` branch (auto-deploys on push).
+
+Settings (`canopy/settings.py`) are env-driven so the same image works locally, in `docker-compose`, or on any host:
+
+| Env var | Purpose |
+|---|---|
+| `SECRET_KEY` | Falls back to a committed dev-only value locally; must be set in production. |
+| `DJANGO_DEBUG` | `"True"`/unset. Defaults to `False` (secure by default) — local dev/tests need this set explicitly (docker-compose already does). |
+| `DJANGO_ALLOWED_HOSTS` | Comma-separated. |
+| `CSRF_TRUSTED_ORIGINS` | Optional — auto-derived from `DJANGO_ALLOWED_HOSTS` (same hosts, `https://` prefixed) if unset. |
+| `DATABASE_URL` | What Render's/Railway's Postgres plugin injects; parsed with stdlib `urlparse`. Falls back to split `DB_*` vars (what local `docker-compose` uses) if unset. |
+| `GITHUB_TOKEN` | Optional, raises the rate-limit allowance for the source-snippet fetch. |
+
+Two bugs found only by actually trying to deploy, not visible from reading the code:
+
+- `collectstatic` had no `STATIC_ROOT` to write to at all — the Dockerfile ran it, but it was always going to fail.
+- `explorer/dash_apps.py` calls Django's `static()` at **Python import time** (`DjangoDash(..., external_stylesheets=[static(...)])`), which runs as a side effect of `collectstatic` importing the app — before `collectstatic` has copied anything into `STATIC_ROOT` or built the manifest that lookup depends on. Fixed with `canopy/storage.py`, a small `ManifestStaticFilesStorage` subclass that falls back to the unhashed filename for that one lookup instead of crashing the whole command on a fresh checkout.
+
+Also found live, after the first real deploy: the site had no route at all for bare `/` (only `/analyze/`, `/graph/<id>/`, etc.), and the explorer page's own logo hardcoded `href='/'` instead of reversing the URL name — both 404'd. Fixed: `/` now redirects to `/analyze/`, and the logo uses `reverse('analyze')`.
+
+**Hosting note:** originally scoped for Railway (settings/Dockerfile were written host-agnostic on purpose, so this cost nothing) but deployed to Render instead — Railway's free trial is time/credit-limited ($5/30 days, then requires a paid plan to keep running), while Render's free tier has no time limit on the web service itself (only its free Postgres, which is deleted 90 days after creation — a known, accepted tradeoff for a low-stakes project, not yet worked around).
+
+**Known limitation:** the analyze endpoint's rate limiter uses Django's default process-local cache (`LocMemCache`), so it's only correctly enforced with a single gunicorn worker/replica — which is the deployed default (no `--workers`/`WEB_CONCURRENCY` set). Scaling to multiple workers or replicas would split traffic across processes that don't share the counter, silently multiplying the effective limit. Would need a shared cache (Redis) to fix properly if that becomes real.
 
 ## What's next, in order
 
-1. **Wire `django-plotly-dash`** into `INSTALLED_APPS`, middleware (`django_plotly_dash.middleware.BaseMiddleware`), static finders, and URLs (`django_plotly_dash.urls`). Confirm a minimal Dash "hello world" renders inside a Django page before building the real graph on top.
-2. **Register `Repo`/`CommitAnalysis` in `explorer/admin.py`** — trivial, but needed to inspect parsed data without custom tooling while building the rest.
-3. **Build the "analyze a repo" view**: accepts a URL, calls `parsing.pipeline.analyze_repo`, saves the result into a `CommitAnalysis` row. Check for an existing `CommitAnalysis` (same repo + commit hash) before re-running the pipeline — that's the caching layer the models were designed for.
-4. **Basic input error handling** in that view: invalid/unreachable URL (`CloneError` from `parsing/clone.py` already gives a clean exception to catch), private repos (not supported, no OAuth yet), repos with zero Python files.
-5. **Register a `django-plotly-dash` app for the graph** and wire up `dash-cytoscape` to render a `CommitAnalysis`'s `nodes`/`edges` JSON — hierarchical/dagre layout, collapsed past depth 2 by default.
-6. **Node-click detail panel**: docstring, file path, line range, source snippet (pulled from the cloned repo or GitHub's raw API), LOC/complexity, clickable callers/callees, a GitHub deep link.
-7. **Cross-cutting "who calls this anywhere in the repo" view**, search-by-name, noise filters (tests/vendor/`__pycache__`/venv, default hidden).
-8. **Polish + deploy**: README already exists; still need deployment (Railway/Render/Fly.io + managed Postgres), Gunicorn + WhiteNoise (already in `requirements.txt`/`Dockerfile`), basic rate limiting on the analyze endpoint, and real-world testing against repos not used during development.
+Nothing blocking is left for the MVP as originally scoped. Real remaining ideas, roughly in order of value:
+
+1. **Work around Render's 90-day free Postgres expiry** — either recreate the DB and re-run analyses periodically, or move the analysis cache to something with a real persistence guarantee.
+2. **Lazy-render containers** (packages/modules/classes), not just function-pill lists — the biggest remaining performance lever for very large repos.
+3. **Multi-language support** beyond Python (discussed, not started — would need a parser per additional language, since the current pipeline is built entirely around Python's `ast` module).
+4. **Private repo support** (GitHub OAuth) — explicitly out of scope for the MVP.
+5. **Shared-cache rate limiting** (Redis) if this ever needs to scale beyond one worker/replica.
 
 ## Running it locally
 
@@ -65,16 +98,18 @@ venv\Scripts\Activate.ps1          # Windows
 pip install -r requirements.txt
 docker compose up -d db            # Postgres container
 python manage.py migrate
+set DJANGO_DEBUG=True              # required now that DEBUG defaults to False
 python manage.py runserver
 ```
-Or the whole stack via `docker compose up --build`.
+Or the whole stack via `docker compose up --build` (it already sets `DJANGO_DEBUG=True`).
 
 ## Git workflow / conventions in use
 
-- Branch off `dev` (the default branch); `master` is production, updated separately, not day-to-day.
-- **No commit/PR attribution** (no `Co-Authored-By`, no "Generated with Claude Code" footer) — an explicit, standing instruction from the project owner that overrides any default tooling behavior suggesting otherwise.
+- Branch off `dev` (the default branch); `master` is production, kept in sync by fast-forwarding it to `dev` on request — not automatic, and not every commit.
+- **Commits and PRs now include attribution** (`Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>` on commits, a "Generated with Claude Code" footer on PR descriptions) — this is a live, current instruction from the project owner that **supersedes** the earlier "no attribution" convention this file used to document.
 - **No Jira/ticket references anywhere** in commits, branches, or PR descriptions — the project moved off ticket-based tracking; this file (and `canopy-dev-notes.md`) is the source of truth for status instead.
-- Batch related work into one PR rather than one PR per small step (this was a correction partway through — the parsing pipeline was originally built as 12 separate stacked PRs, which was too granular).
+- Batch related work into one PR rather than one PR per small step.
+- Every PR gets reviewed by hand (no `/code-review` skill, no subagents) before merging — a standing instruction for this project specifically.
 - If stacking branches for related work, be careful with `gh pr merge --delete-branch` run back-to-back across a deep stack — it can race GitHub's base-branch retargeting and auto-close PRs whose base branch just got deleted. If that happens: verify no content was lost with `git diff --stat` between the stray branch and `dev` before deleting anything, then merge the stack's tip directly into `dev` with a plain `git merge`.
 
 ## Environment notes (Windows-specific gotchas hit during setup)
