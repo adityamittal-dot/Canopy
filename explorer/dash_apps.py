@@ -163,6 +163,14 @@ def render_header(elements, repo_meta):
         html.Span(f'{edge_count} edges', className='muted'),
       ] if repo_meta.get('name') else []
     )),
+    html.A(
+      html.Span(className='cy-header__github-icon'),
+      href='https://github.com/adityamittal-dot/Canopy',
+      target='_blank',
+      rel='noreferrer',
+      title='View source on GitHub',
+      className='cy-header__github',
+    ),
   ])
 
   tag = f"repo · {repo_meta['name'].upper()}" if repo_meta.get('name') else ''
