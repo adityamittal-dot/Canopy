@@ -1,5 +1,5 @@
 from parsing.clone import CloneError, clone_repo, get_remote_head_commit
-from parsing.walk import find_python_files
+from parsing.walk import find_source_files
 
 
 def test_clone_and_walk_finds_python_files():
@@ -7,10 +7,9 @@ def test_clone_and_walk_finds_python_files():
 
     assert len(commit_hash) == 40
 
-    py_files = find_python_files(path)
+    py_files = [f for f in find_source_files(path) if f.endswith('.py')]
 
     assert len(py_files) > 0
-    assert all(f.endswith('.py') for f in py_files)
     assert not any('__pycache__' in f for f in py_files)
 
 
