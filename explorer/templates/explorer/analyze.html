@@ -3,7 +3,7 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <title>canopy — map any Python repo, exactly</title>
+    <title>canopy — map any repo, exactly</title>
     <link rel="stylesheet" href="{% static 'explorer/landing.css' %}">
 </head>
 <body>
@@ -14,7 +14,7 @@
             <span class="subpath">/ survey</span>
         </a>
         <div class="badges">
-            <span>python ast · deterministic</span>
+            <span>11 languages · deterministic</span>
             <span class="vdivider"></span>
             <span>no accounts</span>
         </div>
@@ -26,10 +26,10 @@
     <main>
         <h1>Read the structure before you read the code.</h1>
         <p class="lede">
-            Paste a public GitHub URL. Canopy parses every <code>.py</code> file with Python's
-            <strong>ast</strong> module and draws a nested graph — repo, packages, modules, classes,
-            functions — with every call edge resolved. Static analysis only: nothing inferred, nothing
-            guessed.
+            Paste a public GitHub URL. Canopy parses every file it recognizes — Python, JavaScript,
+            TypeScript, Go, Java, Rust, C, C++, Ruby, PHP, C# — and draws a nested graph — repo, packages,
+            modules, classes, functions — with every call edge resolved. Static analysis only: nothing
+            inferred, nothing guessed.
         </p>
 
         <p class="field-label">repository url</p>
@@ -53,7 +53,7 @@
                 <a href="{% url 'graph' analysis.id %}">open explorer →</a>
             </div>
             {% if not analysis.graph.nodes %}
-                <p class="warnings">No Python symbols found in this repo (empty, non-Python, or all files failed to parse).</p>
+                <p class="warnings">No symbols found in this repo (empty, no recognized language, or all files failed to parse).</p>
             {% endif %}
             {% if analysis.graph.parse_failures %}
                 <p class="warnings">{{ analysis.graph.parse_failures|length }} file(s) failed to parse.</p>

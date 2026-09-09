@@ -15,6 +15,7 @@ class Symbol:
     end_lineno: int | None = None
     calls: list[str] = field(default_factory=list)
     complexity: int = 1
+    language: str = 'python'
 
 
 class SymbolVisitor(ast.NodeVisitor):

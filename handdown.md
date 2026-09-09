@@ -4,7 +4,7 @@ _Last updated: 2026-09-09_
 
 ## What this is
 
-Paste a GitHub repo URL in, get a hierarchical, explorable diagram of the codebase: repo -> packages -> modules -> classes -> functions, down to individual functions as leaf nodes, with callers/callees shown for each one. An optional AI chat drawer (off unless `GEMINI_API_KEY` is set) answers questions about the currently-open repo, grounded in its own parsed graph. See `README.md` for the full pitch, competitive landscape, and tech stack rationale; `canopy-notes.md` for the original planning doc.
+Paste a GitHub repo URL in, get a hierarchical, explorable diagram of the codebase: repo -> packages -> modules -> classes -> functions, down to individual functions as leaf nodes, with callers/callees shown for each one. Supports Python, JavaScript, TypeScript, Go, Java, Rust, C, C++, Ruby, PHP, and C# in the same repo at once. An optional AI chat drawer (off unless `GEMINI_API_KEY` is set) answers questions about the currently-open repo, grounded in its own parsed graph. See `README.md` for the full pitch, competitive landscape, and tech stack rationale; `canopy-notes.md` for the original planning doc.
 
 ## Current status: live and deployed
 
@@ -14,23 +14,29 @@ Every phase in the original roadmap is done: parsing engine, Django app, explora
 
 ### What's built (`parsing/` package)
 
-Unchanged since the parsing engine was completed — still a pure-Python, Django-free layer.
+Still a pure-Python, Django-free layer. As of this session, multi-language: every file is dispatched to the `LanguageAnalyzer` registered for its extension (`parsing/languages/`) rather than assuming Python everywhere. Downstream of extraction (`resolve.py`, `metrics.py`, `symbol_table.py`, `explorer/graph_data.py`) was already language-agnostic before this change and needed no rework — it was already built around the generic `Symbol`/`Edge` shape.
 
 | File | What it does |
 |---|---|
 | `clone.py` | `clone_repo(url)` — shallow `git clone --depth 1` into a temp dir, returns `(local_path, commit_hash)`. Raises `CloneError` on failure instead of a raw traceback. Also `get_remote_head_commit(url)` — `git ls-remote`, no full clone, used for the cache-check before deciding whether to re-analyze. |
-| `walk.py` | `find_python_files(root)` — walks a directory, returns every `.py` file path. Prunes `.git`/`venv`/`node_modules`/`__pycache__`/hidden dirs during the walk (not after), so it never descends into them. |
-| `parse.py` | `parse_file(path)` / `parse_files(paths)` — reads via `tokenize.open` (respects PEP 263 encoding declarations) and runs `ast.parse()`. Batch version keeps going past individual failures, returns `(successes, failures)` separately. |
-| `extract.py` | The core. `Symbol` dataclass (kind, name, file, docstring, lineno, end_lineno, calls, complexity) + `SymbolVisitor`, an `ast.NodeVisitor` that walks a module once and records every class/function definition, including nesting, via a scope stack for correct qualified names. |
-| `calls.py` | `extract_calls(node)` — walks a function's body for `Call` nodes, returns dotted names (`self.foo.bar`). Stops at nested def boundaries so a nested function's calls aren't misattributed. |
-| `imports.py` | `extract_imports(tree)` — every `import`/`from...import` as a dotted string, including relative imports (`.pkg.x`, `..pkg.x`). |
-| `symbol_table.py` | `build_symbol_table(symbols)` — flattens every file's symbols into one `{qualified_name: Symbol}` dict spanning the repo. |
-| `resolve.py` | `resolve_calls(table)` — the call-graph builder. Matches by bare (last-component) name; same-file candidates preferred over repo-wide. Repo-wide fallback restricted to calls that look local. Unmatched calls become explicit unresolved edges (`callee=None`), never dropped. |
-| `metrics.py` | `compute_loc`, `compute_complexity` (1 + branches, stops at nested defs), `compute_fan_in_out` (from resolved edges only). |
-| `pipeline.py` | `analyze_repo(url)` — orchestrates all of the above into one call. Returns `{commit_hash, parse_failures, nodes, edges, imports}`, fully JSON-serializable. |
-| `scripts/dump_symbols.py` | CLI: `python -m scripts.dump_symbols <file> --module-name x` dumps one file's extracted symbols as JSON. |
+| `walk.py` | `find_source_files(root)` — walks a directory, returns every file whose extension has a registered `LanguageAnalyzer`. Prunes `.git`/`venv`/`.venv`/`node_modules`/`__pycache__`/`target`/`dist`/`build`/hidden dirs during the walk (not after), so it never descends into them. |
+| `parse.py` | `parse_file(path)` / `parse_files(paths)` — the Python-specific reader: `tokenize.open` (respects PEP 263 encoding declarations) + `ast.parse()`. Batch version keeps going past individual failures. `ParseError` is shared by every language's analyzer, not just Python's. |
+| `extract.py` | `Symbol` dataclass (kind, name, file, docstring, lineno, end_lineno, calls, complexity, **language**) + `SymbolVisitor`, the original `ast.NodeVisitor` — unchanged, still Python's own extractor. |
+| `calls.py` / `imports.py` | Python-specific `ast.Call`/`ast.Import` walkers, unchanged. |
+| `languages/base.py` | `LanguageAnalyzer` protocol (`parse`/`extract_symbols`/`extract_imports`) + `LANGUAGE_REGISTRY` (extension -> analyzer) + `register()`/`analyzer_for()`. |
+| `languages/python_lang.py` | Thin adapter wrapping `extract.py`/`calls.py`/`imports.py`/`parse.py` behind the `LanguageAnalyzer` interface — Python's own path is otherwise untouched. |
+| `languages/treesitter.py` | **The generic engine.** One `TreeSitterAnalyzer`, parameterized per language by a data-only `TreeSitterLanguageSpec` (which node types are functions/classes, which field holds a name, branch/call/comment/import node types) instead of a hand-written visitor per language. Handles definition nesting, docstring-comment attachment (with adjacency tolerant of grammars that do/don't include a comment's trailing newline in its span), calls (callee = the raw source text of the callee field, then `.`/`::`/`->`-normalized so `resolve.bare_name` keeps working unmodified), complexity (branch-node counting, stops at nested def boundaries), plus two small per-language escape hatches: `transparent_scope_types` (Rust's `impl Widget { }` isn't a definition itself but its methods nest under `Widget`) and `receiver_field`/`definition_filter` (Go's receiver methods and struct-vs-alias `type_spec` disambiguation). |
+| `languages/specs.py` | The 10 tree-sitter `TreeSitterLanguageSpec`s (JS, TS, Go, Java, Rust, C, C++, Ruby, PHP, C#) + registers the Python adapter. Node type/field names came from parsing real samples through each grammar during development (these PyPI packages ship no `node-types.json`), not from docs alone. |
+| `symbol_table.py` | `build_symbol_table(symbols)` — flattens every file's symbols into one `{qualified_name: Symbol}` dict spanning the repo. Unchanged. |
+| `resolve.py` | `resolve_calls(table)` — the call-graph builder. Matches by bare (last-component) name; same-file candidates preferred over repo-wide. Repo-wide fallback restricted to calls that look local (`self.`/`cls.`/`this.`/`this->`/`$this.`/`$this->` prefixes, or no dot at all). **New:** candidates are also restricted to the caller's own `language` — a same-named function in a different language never cross-resolves by coincidence in a polyglot repo. |
+| `metrics.py` | `compute_loc`, `compute_complexity` (Python-specific: 1 + branches + boolean-operator fan-out, stops at nested defs), `compute_fan_in_out` (language-agnostic, from resolved edges only). Non-Python languages get a simpler "rough" complexity (1 + branch-node count only, no boolean-operator fan-out) computed inline in `treesitter.py`. |
+| `pipeline.py` | `analyze_repo(url)` = `clone_repo` + `analyze_local_repo(repo_root, commit_hash)`. The latter is split out so the parse/dispatch/resolve/measure pipeline is testable against a local directory without a real clone (see `tests/test_multilang_pipeline.py`). Dispatches each file to `languages.analyzer_for(file)`; an unrecognized extension was never even collected by `find_source_files`, so it contributes nothing rather than erroring — "any type of repo" degrades gracefully. |
+| `scripts/dump_symbols.py` | CLI: `python -m scripts.dump_symbols <file> --module-name x` dumps one file's extracted symbols as JSON — still Python-only, unchanged. |
 
-**Known limitation, not fixed:** call resolution matches by bare method/function name — two different classes with an identically-named method in the same file can still collide. Cross-file collisions with common names are mitigated (`resolve.py`'s `_looks_local` check); same-file collisions remain a real, accepted gap.
+**Known limitations, not fixed:**
+- Call resolution matches by bare method/function name — two different classes with an identically-named method in the same file can still collide. Cross-file collisions with common names are mitigated (`resolve.py`'s `_looks_local` check, now also language-restricted); same-file collisions remain a real, accepted gap.
+- `.h` headers are always parsed with the C grammar (no reliable way to distinguish a C++ header by extension alone) — a C++-only header may parse incompletely.
+- Non-Python languages get "rough" complexity (branch-node count only); Python alone also counts boolean-operator fan-out.
 
 ### Django app (`explorer/`)
 
@@ -102,11 +108,13 @@ Nothing blocking is left for the MVP as originally scoped. Real remaining ideas,
 
 1. **Work around Render's 90-day free Postgres expiry** — either recreate the DB and re-run analyses periodically, or move the analysis cache to something with a real persistence guarantee.
 2. **Lazy-render containers** (packages/modules/classes), not just function-pill lists — the biggest remaining performance lever for very large repos.
-3. **Multi-language support** beyond Python (discussed, not started — would need a parser per additional language, since the current pipeline is built entirely around Python's `ast` module).
-4. **Private repo support** (GitHub OAuth) — explicitly out of scope for the MVP.
-5. **Shared-cache rate limiting** (Redis) if this ever needs to scale beyond one worker/replica.
+3. **Private repo support** (GitHub OAuth) — explicitly out of scope for the MVP.
+4. **Shared-cache rate limiting** (Redis) if this ever needs to scale beyond one worker/replica.
+5. **More languages beyond the current ten** — additive per the `LanguageAnalyzer` registry (a grammar dependency + a `TreeSitterLanguageSpec` config table + fixtures), not a rewrite.
 
-**Done this session:** optional AI chat (`GEMINI_API_KEY`-gated, off by default) — see `explorer/ai_chat.py` and the "AI chat" section above. Still needed before it's actually usable in production: **add a real `GEMINI_API_KEY` to Render's env vars** — everything is built and tested against the live API's error path (an invalid key), but the happy-path reply quality hasn't been checked against a real key yet.
+**Done this session:**
+- Multi-language parsing (Python + JavaScript/TypeScript/Go/Java/Rust/C/C++/Ruby/PHP/C#, via tree-sitter behind the `LanguageAnalyzer` interface — see `parsing/languages/`).
+- Optional AI chat (`GEMINI_API_KEY`-gated, off by default) — see `explorer/ai_chat.py` and the "AI chat" section above. Still needed before it's actually usable in production: **add a real `GEMINI_API_KEY` to Render's env vars** — everything is built and tested against the live API's error path (an invalid key), but the happy-path reply quality hasn't been checked against a real key yet.
 
 ## Running it locally
 
