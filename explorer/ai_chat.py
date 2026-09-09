@@ -9,10 +9,13 @@ Off by default: every function here is inert unless GEMINI_API_KEY is set
 when it's unset.
 """
 
+import logging
 import os
 import re
 
 from google.genai import errors as genai_errors
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = 'gemini-2.5-flash-lite'
 _REQUEST_TIMEOUT_MS = 15_000
@@ -142,6 +145,11 @@ def ask_about_repo(analysis, history: list[dict], message: str) -> str:
             ),
         )
     except (genai_errors.APIError, ConnectionError, TimeoutError):
+        # Logged (not just swallowed) so a real failure - bad key, wrong
+        # model id, quota exceeded, network issue - shows up in the
+        # deployment's logs instead of only ever surfacing as the generic
+        # fallback string below with no way to tell which cause it was.
+        logger.exception('Gemini chat request failed; returning fallback reply')
         return _FALLBACK_REPLY
 
     return (response.text or '').strip() or "I couldn't come up with an answer to that."
