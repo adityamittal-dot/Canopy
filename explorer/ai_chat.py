@@ -17,7 +17,7 @@ from google.genai import errors as genai_errors
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = 'gemini-2.5-flash-lite'
+_DEFAULT_MODEL = 'gemini-3.5-flash-lite'
 _REQUEST_TIMEOUT_MS = 15_000
 _MAX_HISTORY_TURNS = 6
 _MAX_MESSAGE_CHARS = 1000
