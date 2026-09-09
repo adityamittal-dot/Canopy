@@ -2,7 +2,7 @@
 
 **Live at [canopy-v7hb.onrender.com](https://canopy-v7hb.onrender.com/)**
 
-Paste a GitHub repo link in. Canopy builds a hierarchical, explorable diagram of the codebase: repo → top-level modules/packages → files → classes → functions. Functions are the leaf nodes — the actual building blocks. Clicking any node shows what job it's responsible for, its source code, and its callers/callees.
+Paste a GitHub repo link in. Canopy builds a hierarchical, explorable diagram of the codebase: repo → top-level modules/packages → files → classes → functions. Functions are the leaf nodes — the actual building blocks. Clicking any node shows what job it's responsible for, its source code, and its callers/callees. An optional AI chat panel (off unless a Gemini API key is configured) answers questions about the repo you're looking at, grounded strictly in that repo's own parsed graph.
 
 Think "Obsidian's graph view, but auto-generated from a codebase instead of hand-written notes," combined with the backlinks idea: a function's callers/callees matter just as much as its position in the file tree.
 
@@ -25,6 +25,7 @@ None of them drill all the way down to individual functions as leaf nodes, and n
 4. **Metrics** — lines of code, rough cyclomatic complexity, and fan-in/fan-out per function.
 5. **Persist** — the parsed graph (nodes + edges as JSON) is cached in Postgres, keyed by repo URL + commit hash.
 6. **Render** — a nested box/pill tree (repo → packages → modules → classes → functions), collapsed past the function level by default. Clicking a node opens a side panel with its docstring, source snippet (syntax-highlighted, fetched live from GitHub), metrics, and clickable callers/callees. Toggles show/hide call edges, tests, and vendored dependencies; a search bar jumps straight to any qualified name.
+7. **Chat (optional)** — a drawer in the explorer view that answers free-form questions about the currently-open repo, grounded in that repo's already-parsed graph (symbol names, docstrings, structure, call edges) rather than free-associating. Entirely separate from the deterministic pipeline above — it only exists, and only ever runs, when `GEMINI_API_KEY` is set; the graph/parsing stays 100% static analysis either way.
 
 ## Tech stack
 
@@ -33,14 +34,16 @@ None of them drill all the way down to individual functions as leaf nodes, and n
 - **Parser:** Python's built-in `ast` module (Python-only for the MVP, no external dependencies).
 - **Storage:** PostgreSQL via Django's ORM — `Repo` / `CommitAnalysis` models, with a `JSONField` holding the parsed graph. Doubles as the analysis cache.
 - **Hosting:** Render (Docker-based web service + managed Postgres), WhiteNoise for static files, gzip compression.
-- **No LLM, no chat, no background job queue for v1** — static analysis only, kept fast, deterministic, and infra-light.
+- **No background job queue for v1** — parsing runs synchronously in a Django view.
+- **AI chat, optional and off by default:** the [official `google-genai` SDK](https://pypi.org/project/google-genai/) against a Gemini flash-lite model, only when `GEMINI_API_KEY` is set. The graph/parsing pipeline itself remains 100% static analysis, no LLM involved — chat is a separate, clearly-optional layer that answers questions *about* the already-deterministic graph, never influences it.
 
 ## Key decisions
 
 | Decision | Why |
 |---|---|
-| No LLM / no chat for v1 | Keeps the core product free, fast, deterministic, infra-light. |
+| No LLM in the parsing/graph pipeline | Keeps the core product free, fast, deterministic, infra-light — the structural graph itself is never LLM-derived. |
 | Static analysis over LLM-guessed structure | More accurate than asking an LLM to infer architecture — avoids hallucinated relationships. |
+| Chat as a separate, optional, off-by-default layer | Answering questions *about* an already-computed graph is a genuinely different (and lower-stakes) job than *computing* the graph — bolting it on as an opt-in extra keeps the deterministic core's guarantees intact rather than trading them away. |
 | Python-only MVP | The built-in `ast` module needs zero extra dependencies. |
 | Dash (not React) | Keeps the whole build in one Python codebase — a hand-rolled component tree instead of a graph-visualization library, once the UI moved to a nested box/pill layout traced from a reference design rather than a force-directed graph. |
 | Django, via `django-plotly-dash` | Django owns routing/models/auth/admin; Dash owns the interactive graph. |
@@ -76,16 +79,27 @@ Or run the whole stack (app + database) via Docker:
 docker compose up --build
 ```
 
+### AI chat (optional)
+
+Set `GEMINI_API_KEY` (a free key from [Google AI Studio](https://aistudio.google.com/apikey)) to turn on an "ai chat" toggle in the explorer toolbar — a drawer for asking free-form questions about the currently-open repo. Unset (the default), the chat UI doesn't render at all, not just hidden.
+
+- **Grounded, not free-associating:** every question is answered against a context block built from that repo's own parsed graph (repo identity, top-level structure, and the symbols most relevant to the question via keyword overlap — not embeddings, no extra infra) — the system prompt explicitly tells the model to say it doesn't know rather than guess when the answer isn't in that context.
+- **Rate-limited separately and more tightly than the analyze endpoint** — a shared, quota-limited key is the scarcest resource in the app once it's public.
+- **Optional `GEMINI_MODEL` override** if you want a different model than the flash-lite default.
+
+Known, accepted limitation: repo content (docstrings/comments from an arbitrary cloned repo) becomes part of the LLM prompt, so a malicious repo could attempt prompt injection against its own chat session — the system instruction constrains scope but doesn't eliminate that risk, same posture as the analyze endpoint's SSRF guard not closing every gap.
+
 ### Deploying it yourself
 
-The app is Docker-based and reads all production config from environment variables — see `.env.example` for the full list (`SECRET_KEY`, `DJANGO_ALLOWED_HOSTS`, `DATABASE_URL`, optional `GITHUB_TOKEN`, etc.). It's currently deployed on [Render](https://render.com) (a Docker web service + their managed Postgres plugin), but nothing about it is Render-specific — the same image runs anywhere that can build a `Dockerfile` and inject env vars (Railway, Fly.io, a plain VM).
+The app is Docker-based and reads all production config from environment variables — see `.env.example` for the full list (`SECRET_KEY`, `DJANGO_ALLOWED_HOSTS`, `DATABASE_URL`, optional `GITHUB_TOKEN`/`GEMINI_API_KEY`, etc.). It's currently deployed on [Render](https://render.com) (a Docker web service + their managed Postgres plugin), but nothing about it is Render-specific — the same image runs anywhere that can build a `Dockerfile` and inject env vars (Railway, Fly.io, a plain VM).
 
 ## Known limitations (accepted for v1)
 
 - Dynamic Python features (decorators, `getattr`, metaclasses) can defeat static call resolution — marked as unknown rather than guessed.
 - No private repo support yet (would need GitHub OAuth).
 - Python-only — no support yet for other languages.
-- Runs as a single Django app/process; the per-IP rate limit on the analyze endpoint uses Django's process-local cache, so it only holds correctly with a single gunicorn worker/replica (the deployed default).
+- Runs as a single Django app/process; the per-IP rate limits (analyze endpoint, and separately the AI chat endpoint) use Django's process-local cache, so they only hold correctly with a single gunicorn worker/replica (the deployed default).
+- AI chat (when enabled) is grounded in the parsed graph but the underlying model can still occasionally be steered by adversarial content in a repo's own docstrings/comments — mitigated, not eliminated, by the system prompt's scope constraint.
 
 ## Roadmap
 
@@ -93,4 +107,5 @@ The app is Docker-based and reads all production config from environment variabl
 - **Phase 2 — Django app + visualization:** wrap the parser in Django, persist via the ORM, render the first interactive graph with a node detail panel. ✅ Done.
 - **Phase 3 — Exploration experience:** cross-cutting "who calls this" view, search by name, noise filtering (tests/vendor, default hidden), graceful large-repo handling. ✅ Done.
 - **Phase 4 — Polish, deploy, buffer:** UI redesign (traced from a reference design, full custom CSS system), performance work (clientside selection highlighting, gzip), production hardening, deployment. ✅ Done — live on Render.
+- **Phase 5 — Optional AI chat:** a repo-scoped chat drawer grounded in the parsed graph, behind a `GEMINI_API_KEY` feature flag — off by default, doesn't touch the deterministic parsing/graph pipeline. ✅ Done.
 - **Not yet started:** multi-language support beyond Python, private repo support (GitHub OAuth), lazy-rendering containers for very large repos (currently only function lists collapse by default; packages/modules/classes always render in full).

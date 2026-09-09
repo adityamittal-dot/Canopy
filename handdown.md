@@ -1,10 +1,10 @@
 # Canopy — Handoff
 
-_Last updated: 2026-09-06_
+_Last updated: 2026-09-09_
 
 ## What this is
 
-Paste a GitHub repo URL in, get a hierarchical, explorable diagram of the codebase: repo -> packages -> modules -> classes -> functions, down to individual functions as leaf nodes, with callers/callees shown for each one. See `README.md` for the full pitch, competitive landscape, and tech stack rationale; `canopy-notes.md` for the original planning doc.
+Paste a GitHub repo URL in, get a hierarchical, explorable diagram of the codebase: repo -> packages -> modules -> classes -> functions, down to individual functions as leaf nodes, with callers/callees shown for each one. An optional AI chat drawer (off unless `GEMINI_API_KEY` is set) answers questions about the currently-open repo, grounded in its own parsed graph. See `README.md` for the full pitch, competitive landscape, and tech stack rationale; `canopy-notes.md` for the original planning doc.
 
 ## Current status: live and deployed
 
@@ -36,8 +36,10 @@ Unchanged since the parsing engine was completed — still a pure-Python, Django
 
 - `explorer/models.py`: `Repo` (url, name, created_at) and `CommitAnalysis` (repo FK, commit_hash, graph JSONField, unique on repo+commit_hash) — this is the analysis cache.
 - `explorer/views.py`: `analyze` (accepts a URL, checks the remote HEAD commit against a cached `CommitAnalysis` before re-running the pipeline, has SSRF guards against private/loopback hosts, and a per-IP rate limit of 5 submissions/minute) and `graph_view` (renders the Dash-embedded explorer for one analysis).
+- `explorer/ratelimit.py` (new): `client_ip(request)` / `is_rate_limited(request, key_prefix, max_requests, window_seconds)` — extracted from `views.py` so the AI chat callback (see below) can reuse the exact same per-IP limiter with its own, stricter budget instead of duplicating it.
 - `explorer/dash_apps.py`: the interactive explorer itself — see "UI redesign" below.
 - `explorer/github_links.py`: builds GitHub blob deep-links and fetches live source snippets from `raw.githubusercontent.com` for the detail panel (optional `GITHUB_TOKEN` env var raises the request allowance).
+- `explorer/ai_chat.py` (new): the optional repo-scoped AI chat. `is_chat_enabled()` gates everything on `GEMINI_API_KEY` being set; `build_repo_context(analysis, message)` builds a bounded context block (repo identity, top-level modules, plus the parsed symbols most relevant to the message via simple keyword overlap — no embeddings, no extra infra); `ask_about_repo(analysis, history, message)` calls the official `google-genai` SDK and returns the reply, or a friendly fallback string on any API/network failure (never raises into the calling Dash callback). Uses `explorer/ratelimit.py` for a per-IP budget separate from and tighter than the analyze endpoint's.
 
 ### UI redesign
 
@@ -55,6 +57,15 @@ Fixed by moving selection highlighting to a Dash `clientside_callback` (pure JS,
 
 Not done: lazy-rendering containers themselves (currently only function-pill lists collapse; packages/modules/classes always render in full, which is the biggest remaining lever for very large repos).
 
+### AI chat (optional, off unless `GEMINI_API_KEY` is set)
+
+A drawer in the explorer toolbar for free-form questions about the currently-open repo, grounded in that repo's own parsed graph rather than letting the model free-associate. Deliberately separate from and never influencing the deterministic parsing/graph pipeline - see `explorer/ai_chat.py` above for the module, `README.md`'s "Key decisions" for why this doesn't compromise the "no LLM in the core product" stance.
+
+- **Enabled/disabled is decided once, at Python import time** (`dash_apps.py`'s `_CHAT_ENABLED = is_chat_enabled()`), not per-request - `GEMINI_API_KEY` can't change without a process restart anyway. When disabled, the chat toggle/drawer/stores are never constructed at all (not hidden via CSS), so a disabled deployment carries zero chat-related markup or callback surface.
+- **State is client-side only** (`chat-history-store`, a plain `dcc.Store`) - no DB model, resets on page reload, consistent with the app's existing "no persistence beyond the analysis cache" posture.
+- **Getting the caller's IP into a Dash callback for rate limiting** turned out to have a real, sanctioned mechanism: `django-plotly-dash` inspects a callback's signature (`DjangoDash.get_expanded_arguments`) and injects extra values by parameter name - a callback that declares a `request=None` kwarg (beyond its normal `Input`/`State` args) gets the real Django `HttpRequest` for that dispatch. Not documented anywhere obvious; found by reading `django_plotly_dash/views.py`'s `_update()`, which builds exactly this `arg_map`.
+- **Real bug found only by testing against the live Gemini API** (not by the mocked unit tests, which couldn't have caught it): `_client().models.generate_content(...)` - chaining the call directly off a freshly-constructed `genai.Client()` - intermittently raised `RuntimeError: Cannot send a request, as the client has been closed`, because nothing held a live reference to the `Client` for the request's duration and its `__del__` closes the underlying `httpx` client. Fixed by holding `client = _client()` in a local before calling `.models.generate_content` on it. Worth remembering for any future code that constructs a `genai.Client()` inline.
+
 ### Deployment
 
 Live on **Render**: a Docker-based web service + Render's managed Postgres plugin, connected to the `dev` branch (auto-deploys on push).
@@ -69,6 +80,8 @@ Settings (`canopy/settings.py`) are env-driven so the same image works locally, 
 | `CSRF_TRUSTED_ORIGINS` | Optional — auto-derived from `DJANGO_ALLOWED_HOSTS` (same hosts, `https://` prefixed) if unset. |
 | `DATABASE_URL` | What Render's/Railway's Postgres plugin injects; parsed with stdlib `urlparse`. Falls back to split `DB_*` vars (what local `docker-compose` uses) if unset. |
 | `GITHUB_TOKEN` | Optional, raises the rate-limit allowance for the source-snippet fetch. |
+| `GEMINI_API_KEY` | Optional. Turns on the AI chat panel - unset means the chat UI doesn't render at all. A free key from [Google AI Studio](https://aistudio.google.com/apikey) is enough. |
+| `GEMINI_MODEL` | Optional override of the chat model (defaults to a Gemini flash-lite model). Only matters if `GEMINI_API_KEY` is set. |
 
 Two bugs found only by actually trying to deploy, not visible from reading the code:
 
@@ -79,7 +92,9 @@ Also found live, after the first real deploy: the site had no route at all for b
 
 **Hosting note:** originally scoped for Railway (settings/Dockerfile were written host-agnostic on purpose, so this cost nothing) but deployed to Render instead — Railway's free trial is time/credit-limited ($5/30 days, then requires a paid plan to keep running), while Render's free tier has no time limit on the web service itself (only its free Postgres, which is deleted 90 days after creation — a known, accepted tradeoff for a low-stakes project, not yet worked around).
 
-**Known limitation:** the analyze endpoint's rate limiter uses Django's default process-local cache (`LocMemCache`), so it's only correctly enforced with a single gunicorn worker/replica — which is the deployed default (no `--workers`/`WEB_CONCURRENCY` set). Scaling to multiple workers or replicas would split traffic across processes that don't share the counter, silently multiplying the effective limit. Would need a shared cache (Redis) to fix properly if that becomes real.
+**Known limitation:** both rate limiters (analyze endpoint, and separately the AI chat callback) use Django's default process-local cache (`LocMemCache`), so they're only correctly enforced with a single gunicorn worker/replica — which is the deployed default (no `--workers`/`WEB_CONCURRENCY` set). Scaling to multiple workers or replicas would split traffic across processes that don't share the counter, silently multiplying the effective limit. Would need a shared cache (Redis) to fix properly if that becomes real.
+
+**Known limitation, AI chat specifically:** repo content (docstrings/comments from an arbitrary cloned repo) becomes part of the LLM prompt as context, so a malicious repo could attempt prompt injection against its own chat session. The system instruction constrains scope but doesn't eliminate the risk — same posture as the analyze endpoint's SSRF guard not closing every gap, documented rather than fully solved.
 
 ## What's next, in order
 
@@ -90,6 +105,8 @@ Nothing blocking is left for the MVP as originally scoped. Real remaining ideas,
 3. **Multi-language support** beyond Python (discussed, not started — would need a parser per additional language, since the current pipeline is built entirely around Python's `ast` module).
 4. **Private repo support** (GitHub OAuth) — explicitly out of scope for the MVP.
 5. **Shared-cache rate limiting** (Redis) if this ever needs to scale beyond one worker/replica.
+
+**Done this session:** optional AI chat (`GEMINI_API_KEY`-gated, off by default) — see `explorer/ai_chat.py` and the "AI chat" section above. Still needed before it's actually usable in production: **add a real `GEMINI_API_KEY` to Render's env vars** — everything is built and tested against the live API's error path (an invalid key), but the happy-path reply quality hasn't been checked against a real key yet.
 
 ## Running it locally
 
