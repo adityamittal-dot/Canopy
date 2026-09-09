@@ -550,7 +550,10 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  height: 88vh;
+  /* graph.html embeds this app's own iframe at height="100vh" - matching
+     that here (instead of the previous 88vh) fills it exactly rather than
+     leaving a blank strip of iframe background below the shell. */
+  height: 100vh;
   min-height: 560px;
   border: 1px solid var(--cy-line);
   border-radius: var(--cy-radius);
