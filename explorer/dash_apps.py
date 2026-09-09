@@ -9,12 +9,14 @@ from django.urls import reverse
 from django_plotly_dash import DjangoDash
 from django_plotly_dash.dash_wrapper import PseudoFlask
 
+from explorer.ai_chat import ask_about_repo, is_chat_enabled
 from explorer.github_links import fetch_source_snippet, github_blob_url
 from explorer.graph_data import (
   build_elements, callers_and_callees, index_children, subtree_node_count,
   noise_ids_for_tests, vendor_noise_ids,
 )
 from explorer.models import CommitAnalysis
+from explorer.ratelimit import is_rate_limited
 
 _original_pseudoflask_init = PseudoFlask.__init__
 
@@ -55,6 +57,44 @@ def update_output(n_clicks):
 
 graph_app = DjangoDash('RepoGraph', external_stylesheets=[static('explorer/canopy.css')])
 
+# The AI chat panel is entirely optional and off by default - GEMINI_API_KEY
+# is only ever set as a deliberate deploy-time choice, so checking it once at
+# import time (rather than per-request) is correct: it can't change without a
+# restart anyway. When disabled, none of the chat markup is even built -
+# not hidden via CSS, just never constructed - so a disabled deployment
+# carries zero chat-related payload or callback surface.
+_CHAT_ENABLED = is_chat_enabled()
+
+_CHAT_TOOLBAR_BUTTON = [
+  html.Button('ai chat', id='toggle-chat', className='cy-toggle'),
+] if _CHAT_ENABLED else []
+
+_CHAT_STORES = [
+  dcc.Store(id='chat-history-store', data=[]),
+  dcc.Store(id='chat-open-store', data=False),
+  # Write-only target for the chat clientside callback below - a dedicated
+  # store rather than reusing selection-sync-store, since Dash requires
+  # allow_duplicate=True on *every* callback targeting a shared Output, and
+  # this way the existing selection-highlight callback needs no changes.
+  dcc.Store(id='chat-sync-store', data=None),
+] if _CHAT_ENABLED else []
+
+_CHAT_DRAWER = [
+  html.Div(id='cy-chat', className='cy-chat', children=[
+    html.Div(className='cy-chat__header', children=[
+      html.Span('ask ai about this repo', className='cy-chat__title'),
+      html.Button('×', id='chat-close', className='cy-chat__close'),
+    ]),
+    html.Div(id='cy-chat-messages', className='cy-chat__messages', children=[
+      html.Div('Ask a question about this repo.', className='cy-chat__empty'),
+    ]),
+    html.Div(className='cy-chat__inputrow', children=[
+      dcc.Input(id='chat-input', type='text', placeholder='ask about this repo…', debounce=False, n_submit=0),
+      html.Button('send', id='chat-send', className='cy-chat__send'),
+    ]),
+  ]),
+] if _CHAT_ENABLED else []
+
 graph_app.layout = html.Div(className='cy-app', children=[
   dcc.Store(id='analysis-id-store', data=None),
   dcc.Store(id='elements-store', data=[]),
@@ -68,6 +108,7 @@ graph_app.layout = html.Div(className='cy-app', children=[
   # (a clientside_callback needs some Output to write to, even though
   # nothing ever reads this one back).
   dcc.Store(id='selection-sync-store', data=None),
+  *_CHAT_STORES,
 
   html.Div(className='cy-shell', children=[
     html.Div(id='cy-header'),
@@ -83,6 +124,7 @@ graph_app.layout = html.Div(className='cy-app', children=[
       html.Button('edges: on', id='toggle-edges', className='cy-toggle cy-toggle--active'),
       html.Button('tests: hide', id='toggle-tests', className='cy-toggle cy-toggle--active'),
       html.Button('vendor: hide', id='toggle-vendor', className='cy-toggle cy-toggle--active'),
+      *_CHAT_TOOLBAR_BUTTON,
       html.Div(id='cy-breadcrumb', className='cy-breadcrumb'),
     ]),
     html.Div(className='cy-body', children=[
@@ -104,6 +146,7 @@ graph_app.layout = html.Div(className='cy-app', children=[
       ]),
       html.Aside(id='cy-panel', className='cy-panel'),
     ]),
+    *_CHAT_DRAWER,
   ]),
 ])
 
@@ -679,3 +722,107 @@ def render_detail_panel(selected_id, show_edges, hide_tests, hide_vendor, elemen
     ], className='cy-panel__section', style={'borderBottom': 'none'}))
 
   return sections
+
+
+# --- AI chat (optional - only registered when GEMINI_API_KEY is set) --------
+
+if _CHAT_ENABLED:
+  # A second, stricter budget than the analyze endpoint's 5/min - an LLM
+  # call is the scarcest shared resource in the app (a quota-limited key
+  # everyone using the deployed site shares), so this is deliberately tight.
+  _CHAT_RATE_LIMIT_WINDOW_SECONDS = 60
+  _CHAT_RATE_LIMIT_MAX_MESSAGES = 10
+
+  @graph_app.callback(
+    Output('chat-open-store', 'data'),
+    Input('toggle-chat', 'n_clicks'),
+    Input('chat-close', 'n_clicks'),
+    State('chat-open-store', 'data'),
+    prevent_initial_call=True,
+  )
+  def handle_chat_open_toggle(_toggle_clicks, _close_clicks, is_open):
+    # chat-close always closes; toggle-chat flips - same _parse_triggered
+    # helper handle_interaction already uses to tell two Input buttons apart.
+    triggered_id, _ = _parse_triggered(dash.callback_context.triggered)
+    if triggered_id == 'chat-close':
+      return False
+    return not is_open
+
+  @graph_app.callback(
+    Output('toggle-chat', 'className'),
+    Input('chat-open-store', 'data'),
+  )
+  def render_chat_toggle(is_open):
+    return 'cy-toggle cy-toggle--active' if is_open else 'cy-toggle'
+
+  @graph_app.callback(
+    Output('chat-history-store', 'data'),
+    Output('chat-input', 'value'),
+    Input('chat-send', 'n_clicks'),
+    Input('chat-input', 'n_submit'),
+    State('chat-input', 'value'),
+    State('chat-history-store', 'data'),
+    State('analysis-id-store', 'data'),
+    prevent_initial_call=True,
+  )
+  def handle_chat_submit(_n_clicks, _n_submit, message, history, analysis_id, request=None):
+    """`request` is injected by django-plotly-dash - not a Dash Input/State,
+    it's matched by parameter name against the real Django request for this
+    callback dispatch (see DjangoDash.get_expanded_arguments), which is how
+    a Dash callback gets at the caller's IP for rate limiting."""
+    if not message or not message.strip() or not analysis_id:
+      return dash.no_update, ''
+
+    history = history or []
+
+    if request is not None and is_rate_limited(
+      request, 'chat-rate', _CHAT_RATE_LIMIT_MAX_MESSAGES, _CHAT_RATE_LIMIT_WINDOW_SECONDS,
+    ):
+      reply = "You're sending messages too quickly - wait a moment and try again."
+    else:
+      try:
+        analysis = CommitAnalysis.objects.select_related('repo').get(pk=analysis_id)
+      except CommitAnalysis.DoesNotExist:
+        return dash.no_update, ''
+      reply = ask_about_repo(analysis, history, message)
+
+    new_history = history + [
+      {'role': 'user', 'text': message.strip()},
+      {'role': 'model', 'text': reply},
+    ]
+    return new_history, ''
+
+  @graph_app.callback(
+    Output('cy-chat-messages', 'children'),
+    Input('chat-history-store', 'data'),
+  )
+  def render_chat_messages(history):
+    if not history:
+      return html.Div('Ask a question about this repo.', className='cy-chat__empty')
+    return [
+      html.Div(turn['text'], className=f"cy-chat__bubble cy-chat__bubble--{turn['role']}")
+      for turn in history
+    ]
+
+  # Runs entirely in the browser: toggles the drawer's visibility class and
+  # scrolls its message list to the bottom, same clientside-no-server-round-
+  # trip pattern as the selection-highlight callback above.
+  graph_app.clientside_callback(
+    """
+    function(isOpen, _history) {
+      var drawer = document.getElementById('cy-chat');
+      if (drawer) {
+        drawer.classList.toggle('is-open', !!isOpen);
+      }
+      var messages = document.getElementById('cy-chat-messages');
+      if (messages) {
+        messages.scrollTop = messages.scrollHeight;
+      }
+      return window.dash_clientside.no_update;
+    }
+    """,
+    Output('chat-sync-store', 'data'),
+    Input('chat-open-store', 'data'),
+    Input('chat-history-store', 'data'),
+    prevent_initial_call=True,
+  )
