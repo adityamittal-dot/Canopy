@@ -198,9 +198,18 @@ _VENDOR_PACKAGE_NAMES = {'vendor', 'vendored', 'third_party', 'thirdparty', 'sit
 
 
 def _is_test_module_filename(relative_path: str) -> bool:
+    """Covers each supported language's own test-file naming convention:
+    Python's test_*.py/*_test.py, JS/TS's *.test.js/*.spec.ts, Ruby's
+    *_spec.rb, Go's *_test.go, and Java/C#'s PascalCase *Test.java/
+    *Tests.cs suffix - checked case-sensitively so it doesn't also match
+    ordinary words that happen to end in lowercase "test" ("latest",
+    "contest")."""
     filename = relative_path.rsplit('/', 1)[-1]
-    stem = filename.removesuffix('.py')
-    return stem.startswith('test_') or stem.endswith(('_test', '_tests'))
+    stem = filename.rsplit('.', 1)[0]
+    lower = stem.lower()
+    if lower.startswith('test_') or lower.endswith(('_test', '_tests', '_spec', '.test', '.spec')):
+        return True
+    return stem.endswith(('Test', 'Tests'))
 
 
 def _category_ids(elements: list[dict], is_own_category) -> set[str]:
