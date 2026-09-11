@@ -438,6 +438,28 @@
   color: var(--cy-faint);
 }
 
+.cy-panel__header-right {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+}
+
+.cy-panel__close {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: .2rem;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--cy-mutedfg);
+  transition: color .15s, background-color .15s;
+}
+
+.cy-panel__close:hover { color: var(--cy-fg); background: var(--cy-hover); }
+
 .cy-panel__section {
   border-bottom: 1px solid var(--cy-line);
   padding: 1rem;
@@ -694,3 +716,109 @@
 }
 
 .cy-chat__send:hover { background: color-mix(in oklch, var(--cy-accent) 25%, transparent); }
+
+/* ---------- mobile / touch ----------
+   Below ~860px there's no room for the always-visible 380px detail sidebar
+   next to the tree, so it becomes a full-screen drawer (opened/closed via
+   .is-open, driven by explorer/dash_apps.py's render_panel_className) and
+   the toolbar wraps to two rows instead of overflowing. Above this
+   breakpoint nothing here applies - desktop layout is untouched. */
+
+@media (max-width: 860px) {
+  .cy-shell {
+    min-height: 100vh;
+    border-left: none;
+    border-right: none;
+    border-radius: 0;
+  }
+
+  .cy-header {
+    height: auto;
+    flex-wrap: wrap;
+    row-gap: .35rem;
+    padding: .5rem .75rem;
+  }
+
+  .cy-header__meta {
+    width: 100%;
+    margin-left: 0;
+    flex-wrap: wrap;
+    row-gap: .25rem;
+  }
+
+  .cy-toolbar {
+    height: auto;
+    flex-wrap: wrap;
+    row-gap: .5rem;
+    padding: .6rem .75rem;
+  }
+
+  .cy-search { flex: 1 1 100%; }
+  .cy-search__box { flex: 1; width: auto; }
+  .cy-vdivider { display: none; }
+  .cy-breadcrumb { display: none; }
+
+  .cy-canvas { padding: 1rem .75rem 1.5rem; }
+  .cy-grid { grid-template-columns: 1fr; gap: .75rem; }
+  .cy-canvas__footer { flex-wrap: wrap; gap: .5rem; }
+
+  /* touch targets a bit more forgiving than the mouse-tuned desktop sizes */
+  .cy-toggle { height: 32px; padding: 0 .75rem; }
+  .cy-box__expand { width: 26px; height: 26px; }
+  .cy-fn-pill { padding: .35rem .6rem; }
+  .cy-list-btn { padding: .35rem 0; }
+  .cy-panel__close { width: 32px; height: 32px; font-size: 20px; }
+
+  /* the sidebar becomes a full-screen drawer over everything else,
+     entered/exited the same is-open + CSS-transition pattern the chat
+     drawer already uses */
+  .cy-panel {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    width: auto;
+    border-left: none;
+    background: var(--cy-panel);
+    transform: translateY(100%);
+    opacity: 0;
+    pointer-events: none;
+    transition: transform .2s ease, opacity .2s ease;
+  }
+
+  .cy-panel.is-open {
+    transform: translateY(0);
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* a small bottom-right card doesn't work at phone width - fill most of
+     the viewport instead so the conversation is actually usable */
+  .cy-chat {
+    right: .5rem;
+    bottom: .5rem;
+    left: .5rem;
+    width: auto;
+    max-width: none;
+    height: min(70vh, 520px);
+  }
+
+  /* iOS Safari zooms the whole page in when a focused input's font-size is
+     under 16px - bump just the inputs a phone-size viewport actually shows. */
+  .cy-search__box input,
+  .cy-chat__inputrow input {
+    font-size: 16px;
+  }
+}
+
+@media (max-width: 480px) {
+  .cy-stats { grid-template-columns: repeat(2, 1fr); }
+  .cy-panel__section { padding: .85rem; }
+  .cy-search__box { width: auto; }
+
+  /* the repo/commit line always fits; node/edge counts are the first
+     thing to drop when the header wraps to two lines gets too busy */
+  .cy-header__meta .cy-vdivider,
+  .cy-header__meta .cy-vdivider ~ span {
+    display: none;
+  }
+}

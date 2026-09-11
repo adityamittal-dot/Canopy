@@ -393,6 +393,12 @@ def handle_interaction(_click_values, _n_submit, search_query, expanded, element
 
   if triggered_id == 'search-input':
     new_expanded, new_selected = _resolve_search(search_query, elements, expanded, currently_selected, hide_tests, hide_vendor)
+  elif isinstance(triggered_id, dict) and triggered_id.get('type') == 'cy-click' and triggered_id.get('action') == 'clear' and triggered_value:
+    # The detail panel's close button (mobile: it's a full-screen drawer, so
+    # it needs an explicit way back out) - deselects outright, which the
+    # (new_selected is not None -> dash.no_update) convention below can't
+    # express, so this bypasses it and returns straight away.
+    return dash.no_update, None
   elif isinstance(triggered_id, dict) and triggered_id.get('type') == 'cy-click' and triggered_value:
     # A pattern-matching ALL input re-fires not only on a real click but
     # also whenever the *set* of matched components changes (e.g.
@@ -558,9 +564,13 @@ graph_app.clientside_callback(
         label.classList.add('is-selected');
         var box = label.closest('.cy-box');
         if (box) { box.classList.add('is-selected'); }
+        label.scrollIntoView({behavior: 'smooth', block: 'center', inline: 'nearest'});
       }
       var pill = document.querySelector('.cy-fn-pill[data-node-id="' + escaped + '"]');
-      if (pill) { pill.classList.add('is-selected'); }
+      if (pill) {
+        pill.classList.add('is-selected');
+        pill.scrollIntoView({behavior: 'smooth', block: 'center', inline: 'nearest'});
+      }
     }
 
     return window.dash_clientside.no_update;
@@ -655,7 +665,13 @@ def render_detail_panel(selected_id, show_edges, hide_tests, hide_vendor, elemen
   sections = [
     html.Div(className='cy-panel__header', children=[
       html.Span('node detail', className='cy-panel__label'),
-      html.Span(data['kind'], className=f"cy-k-{data['kind']}"),
+      html.Div(className='cy-panel__header-right', children=[
+        html.Span(data['kind'], className=f"cy-k-{data['kind']}"),
+        html.Button(
+          '×', id=_click_id('clear', 'panel'), className='cy-panel__close',
+          **{'aria-label': 'Close panel'},
+        ),
+      ]),
     ]),
   ]
 
@@ -722,6 +738,19 @@ def render_detail_panel(selected_id, show_edges, hide_tests, hide_vendor, elemen
     ], className='cy-panel__section', style={'borderBottom': 'none'}))
 
   return sections
+
+
+@graph_app.callback(
+  Output('cy-panel', 'className'),
+  Input('selected-node-store', 'data'),
+)
+def render_panel_className(selected_id):
+  """On narrow viewports the panel is a full-screen drawer (see canopy.css)
+  rather than an always-visible sidebar, so it needs an explicit open/closed
+  state to animate in and out of - a separate callback rather than folding
+  this into render_detail_panel's Output so that function's tested
+  single-value return (the panel's children) doesn't have to change shape."""
+  return 'cy-panel' + (' is-open' if selected_id else '')
 
 
 # --- AI chat (optional - only registered when GEMINI_API_KEY is set) --------

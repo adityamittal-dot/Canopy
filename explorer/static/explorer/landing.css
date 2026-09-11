@@ -251,3 +251,38 @@ hr.divider {
   color: var(--cy-faint);
   margin: 0;
 }
+
+/* ---------- mobile ---------- */
+
+@media (max-width: 640px) {
+  header {
+    height: auto;
+    min-height: 48px;
+    padding: .65rem 1rem;
+    flex-wrap: wrap;
+    row-gap: .5rem;
+  }
+
+  header .badges { display: none; }
+
+  main { padding: 2.75rem 1.25rem 3rem; }
+
+  h1 { font-size: 1.5rem; }
+
+  .lede { margin-bottom: 1.75rem; }
+
+  .result-bar { flex-direction: column; align-items: flex-start; }
+  .result-bar a { margin-left: 0; }
+}
+
+@media (max-width: 480px) {
+  header .subpath { display: none; }
+
+  form.analyze-form { flex-direction: column; }
+
+  button.analyze { width: 100%; }
+
+  /* iOS Safari zooms the whole page in when a focused input's font-size
+     is under 16px - this is the only input on the page, so just bump it. */
+  .url-box input { font-size: 16px; }
+}
