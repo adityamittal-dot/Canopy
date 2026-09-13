@@ -171,3 +171,31 @@ def test_fetch_public_repos_omits_auth_header_without_a_token(monkeypatch):
         github_oauth.fetch_public_repos('octocat')
 
     assert 'Authorization' not in captured['headers']
+
+
+def test_fetch_public_repos_logs_rate_limit_remaining_on_failure(caplog):
+    # A real requests.HTTPError raised by response.raise_for_status() on a
+    # 403 carries the triggering response (and its headers) on .response -
+    # this is the single most useful diagnostic for "why is the dashboard
+    # showing 0 repos" (unauthenticated GitHub API calls are capped at 60/hr
+    # per source IP, easy to exhaust without GITHUB_TOKEN set).
+    response = MagicMock()
+    response.headers = {'X-RateLimit-Remaining': '0'}
+    error = requests.HTTPError('403 Client Error', response=response)
+
+    with patch('explorer.github_oauth.requests.get', side_effect=error):
+        with caplog.at_level('WARNING'):
+            repos = github_oauth.fetch_public_repos('octocat')
+
+    assert repos == []
+    assert 'rate limit remaining: 0' in caplog.text
+    assert 'GITHUB_TOKEN' in caplog.text
+
+
+def test_fetch_public_repos_logs_a_warning_on_generic_network_failure(caplog):
+    with patch('explorer.github_oauth.requests.get', side_effect=requests.ConnectionError('down')):
+        with caplog.at_level('WARNING'):
+            repos = github_oauth.fetch_public_repos('octocat')
+
+    assert repos == []
+    assert 'GitHub repo list fetch failed' in caplog.text

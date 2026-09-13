@@ -14,12 +14,15 @@ exchange and the repo-list fetch are unit-testable without a real GitHub
 App, a browser, or the network.
 """
 
+import logging
 import os
 import secrets
 from urllib.parse import urlencode
 
 import requests
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 _AUTHORIZE_URL = 'https://github.com/login/oauth/authorize'
 _TOKEN_URL = 'https://github.com/login/oauth/access_token'
@@ -135,7 +138,20 @@ def fetch_public_repos(username: str) -> list[dict]:
         )
         response.raise_for_status()
         repos = response.json()
-    except (requests.RequestException, ValueError):
+    except (requests.RequestException, ValueError) as exc:
+        # Logged (not just swallowed) so a real failure - most likely
+        # GitHub's unauthenticated rate limit (60 requests/hour *per source
+        # IP*, easy to exhaust on shared hosting without GITHUB_TOKEN set) -
+        # shows up in the deployment's logs instead of only ever surfacing
+        # as an indistinguishable-from-"no repos" empty dashboard.
+        remaining = getattr(getattr(exc, 'response', None), 'headers', {}).get('X-RateLimit-Remaining')
+        if remaining is not None:
+            logger.warning(
+                'GitHub repo list fetch failed for %r (rate limit remaining: %s) - set GITHUB_TOKEN to raise it',
+                username, remaining,
+            )
+        else:
+            logger.warning('GitHub repo list fetch failed for %r: %s', username, exc)
         return []
 
     if not isinstance(repos, list):
