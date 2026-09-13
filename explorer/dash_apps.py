@@ -72,6 +72,10 @@ _CHAT_TOOLBAR_BUTTON = [
 _CHAT_STORES = [
   dcc.Store(id='chat-history-store', data=[]),
   dcc.Store(id='chat-open-store', data=False),
+  # Whether the drawer is docked full-height along the right edge (a wider,
+  # easier-to-read mode for an actual back-and-forth) instead of the small
+  # floating card it starts as - toggled by the header's expand button.
+  dcc.Store(id='chat-expanded-store', data=False),
   # Write-only target for the chat clientside callback below - a dedicated
   # store rather than reusing selection-sync-store, since Dash requires
   # allow_duplicate=True on *every* callback targeting a shared Output, and
@@ -83,13 +87,19 @@ _CHAT_DRAWER = [
   html.Div(id='cy-chat', className='cy-chat', children=[
     html.Div(className='cy-chat__header', children=[
       html.Span('ask ai about this repo', className='cy-chat__title'),
-      html.Button('×', id='chat-close', className='cy-chat__close'),
+      html.Div(className='cy-chat__header-actions', children=[
+        html.Button('expand', id='chat-expand', className='cy-chat__expand'),
+        html.Button('×', id='chat-close', className='cy-chat__close'),
+      ]),
     ]),
     html.Div(id='cy-chat-messages', className='cy-chat__messages', children=[
       html.Div('Ask a question about this repo.', className='cy-chat__empty'),
     ]),
     html.Div(className='cy-chat__inputrow', children=[
-      dcc.Input(id='chat-input', type='text', placeholder='ask about this repo…', debounce=False, n_submit=0),
+      dcc.Input(
+        id='chat-input', type='text', placeholder='ask about this repo…', debounce=False, n_submit=0,
+        autoComplete='off', spellCheck=False,
+      ),
       html.Button('send', id='chat-send', className='cy-chat__send'),
     ]),
   ]),
@@ -117,7 +127,10 @@ graph_app.layout = html.Div(className='cy-app', children=[
         html.Span('search', className='cy-search__label'),
         html.Div(className='cy-search__box', children=[
           html.Span('/', className='cy-search__prefix'),
-          dcc.Input(id='search-input', type='text', placeholder='qualified name', debounce=False, n_submit=0),
+          dcc.Input(
+            id='search-input', type='text', placeholder='name or path', debounce=False, n_submit=0,
+            autoComplete='off', spellCheck=False,
+          ),
         ]),
       ]),
       html.Span(className='cy-vdivider'),
@@ -785,6 +798,22 @@ if _CHAT_ENABLED:
     return 'cy-toggle cy-toggle--active' if is_open else 'cy-toggle'
 
   @graph_app.callback(
+    Output('chat-expanded-store', 'data'),
+    Input('chat-expand', 'n_clicks'),
+    State('chat-expanded-store', 'data'),
+    prevent_initial_call=True,
+  )
+  def handle_chat_expand_toggle(_n_clicks, is_expanded):
+    return not is_expanded
+
+  @graph_app.callback(
+    Output('chat-expand', 'children'),
+    Input('chat-expanded-store', 'data'),
+  )
+  def render_chat_expand_label(is_expanded):
+    return 'collapse' if is_expanded else 'expand'
+
+  @graph_app.callback(
     Output('chat-history-store', 'data'),
     Output('chat-input', 'value'),
     Input('chat-send', 'n_clicks'),
@@ -838,10 +867,11 @@ if _CHAT_ENABLED:
   # trip pattern as the selection-highlight callback above.
   graph_app.clientside_callback(
     """
-    function(isOpen, _history) {
+    function(isOpen, _history, isExpanded) {
       var drawer = document.getElementById('cy-chat');
       if (drawer) {
         drawer.classList.toggle('is-open', !!isOpen);
+        drawer.classList.toggle('is-expanded', !!isExpanded);
       }
       var messages = document.getElementById('cy-chat-messages');
       if (messages) {
@@ -853,5 +883,6 @@ if _CHAT_ENABLED:
     Output('chat-sync-store', 'data'),
     Input('chat-open-store', 'data'),
     Input('chat-history-store', 'data'),
+    Input('chat-expanded-store', 'data'),
     prevent_initial_call=True,
   )
