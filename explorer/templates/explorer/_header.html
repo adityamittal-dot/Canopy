@@ -1,0 +1,30 @@
+<header>
+    <a href="{% url 'analyze' %}" class="logo">
+        <span class="logo-dot"></span>
+        <span class="wordmark">canopy</span>
+        <span class="subpath">/ {{ header_subpath|default:"survey" }}</span>
+    </a>
+    <div class="badges">
+        <span>11 languages · deterministic</span>
+        <span class="vdivider"></span>
+        <span>sign-in optional</span>
+    </div>
+    {% if github_oauth_enabled %}
+        <div class="auth">
+            {% if user.is_authenticated %}
+                <a href="{% url 'dashboard' %}" class="auth-user">
+                    {% if user.github_account.avatar_url %}
+                        <img src="{{ user.github_account.avatar_url }}" alt="" class="auth-avatar">
+                    {% endif %}
+                    <span>{{ user.github_account.username|default:user.username }}</span>
+                </a>
+                <a href="{% url 'logout' %}" class="auth-signout">sign out</a>
+            {% else %}
+                <a href="{% url 'github_login' %}" class="auth-signin">sign in with GitHub</a>
+            {% endif %}
+        </div>
+    {% endif %}
+    <a class="github-link" href="https://github.com/adityamittal-dot/Canopy" target="_blank" rel="noreferrer" aria-label="View source on GitHub" title="View source on GitHub">
+        <span class="github-icon"></span>
+    </a>
+</header>

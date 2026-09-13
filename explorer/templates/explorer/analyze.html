@@ -8,21 +8,7 @@
     <link rel="stylesheet" href="{% static 'explorer/landing.css' %}">
 </head>
 <body>
-    <header>
-        <a href="{% url 'analyze' %}" class="logo">
-            <span class="logo-dot"></span>
-            <span class="wordmark">canopy</span>
-            <span class="subpath">/ survey</span>
-        </a>
-        <div class="badges">
-            <span>11 languages · deterministic</span>
-            <span class="vdivider"></span>
-            <span>no accounts</span>
-        </div>
-        <a class="github-link" href="https://github.com/adityamittal-dot/Canopy" target="_blank" rel="noreferrer" aria-label="View source on GitHub" title="View source on GitHub">
-            <span class="github-icon"></span>
-        </a>
-    </header>
+    {% include 'explorer/_header.html' %}
 
     <main>
         <h1>Read the structure before you read the code.</h1>

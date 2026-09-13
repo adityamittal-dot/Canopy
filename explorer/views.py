@@ -2,16 +2,22 @@ import ipaddress
 import socket
 from urllib.parse import urlparse
 
+from django.contrib.auth import login as auth_login
+from django.contrib.auth import logout as auth_logout
+from django.contrib.auth.decorators import login_required
+from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.core.validators import URLValidator
 from django.db import IntegrityError
-from django.shortcuts import get_object_or_404, render
+from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.views.decorators.http import require_http_methods
 
 from parsing.clone import CloneError, get_remote_head_commit
 from parsing.pipeline import analyze_repo
 
-from .models import CommitAnalysis, Repo
+from .github_oauth import GitHubOAuthError, build_authorize_url, exchange_code_for_token, fetch_github_identity, fetch_public_repos, new_state
+from .models import CommitAnalysis, GitHubAccount, Repo
 from .ratelimit import is_rate_limited
 
 _validate_url = URLValidator(schemes=['http', 'https'])
@@ -140,3 +146,77 @@ def graph_view(request, analysis_id):
     'analysis': analysis,
     'initial_arguments': {'analysis-id-store': {'data': analysis.id}},
   })
+
+
+# --- GitHub sign-in / dashboard ---------------------------------------------
+# See explorer/github_oauth.py for why this never requests a scope or stores
+# an access token - it's identity-only, and the dashboard's repo list comes
+# from GitHub's public API afterward.
+
+def _oauth_redirect_uri(request) -> str:
+  return request.build_absolute_uri(reverse('github_callback'))
+
+
+def github_login(request):
+  state = new_state()
+  request.session['github_oauth_state'] = state
+  return redirect(build_authorize_url(_oauth_redirect_uri(request), state))
+
+
+def _get_or_create_user_for_identity(identity: dict) -> User:
+  """Race-safe get-or-create, mirroring _get_or_create_repo above: GitHub's
+  own username is globally unique and this app's only signup path is this
+  OAuth flow, so github_id (and the Django username mirroring it) can't
+  legitimately collide with anything else - the IntegrityError fallback
+  only matters if two requests for the same brand-new account land at once.
+  """
+  account = GitHubAccount.objects.filter(github_id=identity['id']).select_related('user').first()
+  if account is not None:
+    if account.username != identity['login'] or account.avatar_url != identity['avatar_url']:
+      account.username = identity['login']
+      account.avatar_url = identity['avatar_url']
+      account.save(update_fields=['username', 'avatar_url'])
+    return account.user
+
+  try:
+    user = User.objects.create_user(username=identity['login'])
+    GitHubAccount.objects.create(
+      user=user, github_id=identity['id'], username=identity['login'], avatar_url=identity['avatar_url'],
+    )
+    return user
+  except IntegrityError:
+    account = GitHubAccount.objects.filter(github_id=identity['id']).select_related('user').first()
+    if account is None:
+      raise
+    return account.user
+
+
+def github_callback(request):
+  expected_state = request.session.pop('github_oauth_state', None)
+  state = request.GET.get('state')
+  code = request.GET.get('code')
+
+  if not code or not state or not expected_state or state != expected_state:
+    return render(request, 'explorer/analyze.html', {'error': 'GitHub sign-in failed - please try again.'})
+
+  try:
+    token = exchange_code_for_token(code, _oauth_redirect_uri(request))
+    identity = fetch_github_identity(token)
+  except GitHubOAuthError as exc:
+    return render(request, 'explorer/analyze.html', {'error': f'GitHub sign-in failed: {exc}'})
+
+  user = _get_or_create_user_for_identity(identity)
+  auth_login(request, user)
+  return redirect('dashboard')
+
+
+def github_logout(request):
+  auth_logout(request)
+  return redirect('analyze')
+
+
+@login_required
+def dashboard(request):
+  account = request.user.github_account
+  repos = fetch_public_repos(account.username)
+  return render(request, 'explorer/dashboard.html', {'account': account, 'repos': repos})

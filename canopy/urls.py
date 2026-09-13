@@ -27,4 +27,8 @@ urlpatterns = [
     path('dash-test/', explorer_views.dash_test, name='dash_test'),
     path('analyze/', explorer_views.analyze, name='analyze'),
     path('graph/<int:analysis_id>/', explorer_views.graph_view, name='graph'),
+    path('accounts/github/login/', explorer_views.github_login, name='github_login'),
+    path('accounts/github/callback/', explorer_views.github_callback, name='github_callback'),
+    path('accounts/logout/', explorer_views.github_logout, name='logout'),
+    path('dashboard/', explorer_views.dashboard, name='dashboard'),
 ]

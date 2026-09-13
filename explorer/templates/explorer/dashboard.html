@@ -1,0 +1,45 @@
+{% load static %}
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>canopy — your repos</title>
+    <link rel="stylesheet" href="{% static 'explorer/landing.css' %}">
+</head>
+<body>
+    {% include 'explorer/_header.html' with header_subpath="dashboard" %}
+
+    <main class="dashboard-main">
+        <p class="field-label">your public repos</p>
+        <h1 class="dashboard-title">{{ account.username }}<span class="dashboard-count">{{ repos|length }} repo{{ repos|length|pluralize }}</span></h1>
+
+        {% if repos %}
+            <div class="repo-table">
+                {% for repo in repos %}
+                    <div class="repo-row">
+                        <a href="{{ repo.html_url }}" target="_blank" rel="noreferrer" class="repo-name">
+                            <span class="repo-name-line">
+                                {{ repo.name }}{% if repo.fork %}<span class="repo-fork-tag">fork</span>{% endif %}
+                            </span>
+                            {% if repo.description %}<span class="repo-desc">{{ repo.description }}</span>{% endif %}
+                        </a>
+                        <div class="repo-meta">
+                            <span>{{ repo.language|default:"—" }}</span>
+                            <span>★ {{ repo.stars }}</span>
+                            <span>updated {{ repo.updated_at|slice:":10" }}</span>
+                        </div>
+                        <form method="post" action="{% url 'analyze' %}" class="repo-analyze-form">
+                            {% csrf_token %}
+                            <input type="hidden" name="url" value="{{ repo.html_url }}">
+                            <button type="submit" class="repo-analyze-btn">analyze →</button>
+                        </form>
+                    </div>
+                {% endfor %}
+            </div>
+        {% else %}
+            <p class="dashboard-empty">No public repos found on this account - or GitHub couldn't be reached just now.</p>
+        {% endif %}
+    </main>
+</body>
+</html>

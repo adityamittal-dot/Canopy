@@ -99,6 +99,7 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                'explorer.context_processors.github_oauth',
             ],
         },
     },
@@ -207,6 +208,19 @@ PLOTLY_COMPONENTS = [
 ]
 
 X_FRAME_OPTIONS = 'SAMEORIGIN'
+
+
+# GitHub OAuth ("sign in with GitHub" -> a dashboard of your own public
+# repos). Requests no scopes at all - it's used purely to identify who's
+# signing in, never to read anything on their behalf, so there's no
+# personal access token to store or protect. See explorer/github_oauth.py.
+GITHUB_OAUTH_CLIENT_ID = os.environ.get('GITHUB_OAUTH_CLIENT_ID', '')
+GITHUB_OAUTH_CLIENT_SECRET = os.environ.get('GITHUB_OAUTH_CLIENT_SECRET', '')
+
+# @login_required (the dashboard view) redirects here instead of Django's
+# default /accounts/login/, which this project doesn't have - straight into
+# the GitHub OAuth flow rather than a login form that doesn't exist.
+LOGIN_URL = 'github_login'
 
 
 # Email
