@@ -1,4 +1,19 @@
+from django.conf import settings
 from django.db import models
+
+
+class GitHubAccount(models.Model):
+    """Links a Django User to the GitHub identity they signed in with -
+    id/username/avatar only. No access token: see explorer/github_oauth.py
+    for why signing in never needs or stores one."""
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='github_account')
+    github_id = models.BigIntegerField(unique=True)
+    username = models.CharField(max_length=255)
+    avatar_url = models.URLField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.username
 
 
 class Repo(models.Model):
