@@ -43,6 +43,18 @@
 .cy-app button { font-family: inherit; cursor: pointer; background: none; border: none; color: inherit; }
 .cy-app input { font-family: inherit; color: inherit; background: none; border: none; outline: none; }
 
+/* Chrome/Safari paint a hardcoded white/yellow background on autofilled
+   (or autofill-suggested) inputs that no amount of `background` on the
+   input itself can override - this is the standard fix, forcing the
+   fill color via an absurdly large inset box-shadow instead. */
+.cy-app input:-webkit-autofill,
+.cy-app input:-webkit-autofill:hover,
+.cy-app input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--cy-fg);
+  box-shadow: 0 0 0 1000px var(--cy-ink) inset;
+  transition: background-color 99999s ease-in-out 0s;
+}
+
 /* kind color helpers */
 .cy-k-repo { color: var(--cy-repo); }
 .cy-k-package { color: var(--cy-pkg); }
@@ -588,9 +600,9 @@
   position: absolute;
   right: 1rem;
   bottom: 1rem;
-  width: 340px;
+  width: 420px;
   max-width: calc(100% - 2rem);
-  height: 420px;
+  height: 560px;
   max-height: calc(100% - 2rem);
   display: flex;
   flex-direction: column;
@@ -601,7 +613,8 @@
   opacity: 0;
   transform: translateY(8px);
   pointer-events: none;
-  transition: opacity .15s, transform .15s;
+  transition: opacity .15s, transform .15s, width .2s ease, height .2s ease,
+    top .2s ease, right .2s ease, bottom .2s ease, border-radius .2s ease;
   z-index: 20;
 }
 
@@ -609,6 +622,24 @@
   opacity: 1;
   transform: translateY(0);
   pointer-events: auto;
+}
+
+/* docked full-height along the right edge instead of a small floating
+   card - toggled by the header's expand button for an actual conversation
+   instead of a quick question. */
+.cy-chat.is-expanded {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 460px;
+  max-width: 100%;
+  height: auto;
+  max-height: none;
+  border-radius: 0;
+  border-top: none;
+  border-right: none;
+  border-bottom: none;
+  box-shadow: -12px 0 32px color-mix(in oklch, black 35%, transparent);
 }
 
 .cy-chat__header {
@@ -620,12 +651,28 @@
   padding: .6rem .75rem;
 }
 
+.cy-chat__header-actions {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+}
+
 .cy-chat__title {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: .15em;
   color: var(--cy-faint);
 }
+
+.cy-chat__expand {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--cy-mutedfg);
+  transition: color .15s;
+}
+
+.cy-chat__expand:hover { color: var(--cy-accent); }
 
 .cy-chat__close {
   font-size: 14px;
@@ -800,6 +847,14 @@
     width: auto;
     max-width: none;
     height: min(70vh, 520px);
+  }
+
+  /* expanding on a phone-size viewport just means "take the whole screen"
+     rather than docking to a 460px right-side panel that wouldn't fit */
+  .cy-chat.is-expanded {
+    inset: 0;
+    width: auto;
+    height: auto;
   }
 
   /* iOS Safari zooms the whole page in when a focused input's font-size is
