@@ -111,8 +111,9 @@ def _repo_row(repo: dict) -> dict:
 
 
 def fetch_public_repos(username: str) -> list[dict]:
-    """The dashboard's repo table: every public, non-fork repo `username`
-    owns, most-recently-pushed first. Uses GitHub's public per-user
+    """The dashboard's repo table: every public repo `username` owns
+    (forks included, flagged via the 'fork' key), most-recently-pushed
+    first. Uses GitHub's public per-user
     endpoint (no auth required, same data as browsing their profile) -
     the optional GITHUB_TOKEN env var (already used by github_links.py for
     the source-snippet fetch) is sent along only to raise the shared rate
