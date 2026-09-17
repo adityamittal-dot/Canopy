@@ -102,20 +102,31 @@ header .auth-user {
   display: flex;
   align-items: center;
   gap: .5rem;
+  min-width: 0;
   color: var(--cy-fg);
   transition: color .15s;
 }
 
 header .auth-user:hover { color: var(--cy-accent); }
 
+header .auth-user span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+}
+
 header .auth-avatar {
   width: 20px;
   height: 20px;
   border-radius: 999px;
   display: block;
+  flex-shrink: 0;
 }
 
 header .auth-signout {
+  flex-shrink: 0;
+  white-space: nowrap;
   color: var(--cy-faint);
   transition: color .15s;
 }
@@ -419,6 +430,13 @@ hr.divider {
   }
 
   header .badges { display: none; }
+
+  /* .badges normally carries margin-left:auto to push auth/github-link to
+     the right edge - hiding it here means .auth has to take over that job
+     itself, or it and github-link collapse in next to the logo and wrap
+     onto their own orphaned row. */
+  header .auth { margin-left: auto; }
+  header:not(:has(.auth)) .github-link { margin-left: auto; }
 
   main { padding: 2.75rem 1.25rem 3rem; }
 
