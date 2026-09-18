@@ -269,9 +269,15 @@
   padding: .5rem;
 }
 
+.cy-box--repo { --kind-color: var(--cy-repo); }
 .cy-box--package { --kind-color: var(--cy-pkg); }
 .cy-box--module { --kind-color: var(--cy-mod); }
 .cy-box--class { --kind-color: var(--cy-cls); }
+
+.cy-box--root {
+  background: none;
+  border-style: dashed;
+}
 
 .cy-box.is-selected { outline: 1px solid var(--kind-color); outline-offset: 1px; }
 
@@ -339,6 +345,116 @@
   flex-direction: column;
   gap: .5rem;
 }
+
+/* ---------- org-chart view (alt to .cy-grid nested boxes) ----------
+   Classic CSS org-chart: every level is a <ul>, every node a <li>, and the
+   connector lines are drawn with ::before/::after borders rather than any
+   layout library - same node boxes (.cy-box) and click targets as the
+   nested-box tree, just arranged top-down instead of nested. */
+
+.cy-orgchart {
+  display: flex;
+  justify-content: center;
+  min-width: min-content;
+  padding: .5rem 0 1rem;
+}
+
+.cy-orgchart ul, .cy-orgchart li {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  position: relative;
+}
+
+.cy-orgchart > ul {
+  display: flex;
+}
+
+.cy-orgchart ul {
+  display: flex;
+  padding-top: 1.5rem;
+}
+
+.cy-orgchart li {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1.5rem .5rem 0;
+}
+
+.cy-orgchart li::before,
+.cy-orgchart li::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 50%;
+  width: 50%;
+  height: 1.5rem;
+  border-top: 1px solid var(--cy-line);
+}
+
+.cy-orgchart li::after {
+  right: auto;
+  left: 50%;
+  border-left: 1px solid var(--cy-line);
+}
+
+.cy-orgchart li:only-child {
+  padding-top: 0;
+}
+
+.cy-orgchart li:only-child::before,
+.cy-orgchart li:only-child::after {
+  display: none;
+}
+
+.cy-orgchart li:first-child::before,
+.cy-orgchart li:last-child::after {
+  border: 0 none;
+}
+
+.cy-orgchart li:last-child::before {
+  border-right: 1px solid var(--cy-line);
+  border-radius: 0 .25rem 0 0;
+}
+
+.cy-orgchart li:first-child::after {
+  border-radius: .25rem 0 0 0;
+}
+
+.cy-orgchart > ul > li::before,
+.cy-orgchart > ul > li::after,
+.cy-orgchart > ul > li {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.cy-orgchart ul::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 0;
+  height: 1.5rem;
+  border-left: 1px solid var(--cy-line);
+}
+
+.cy-orgchart > ul::before {
+  display: none;
+}
+
+.cy-og-node {
+  display: inline-block;
+  width: max-content;
+  max-width: 220px;
+  text-align: left;
+  cursor: default;
+}
+
+.cy-og-node .cy-box__header { flex-wrap: nowrap; }
+.cy-og-node .cy-fn-list { padding-left: 0; }
+
+.cy-orgchart .cy-ghost { max-width: 220px; }
 
 /* ---------- ghost / filtered boxes ---------- */
 
