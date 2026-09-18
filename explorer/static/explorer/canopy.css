@@ -217,6 +217,44 @@
   color: var(--cy-accent);
 }
 
+.cy-zoomctl {
+  display: flex;
+  align-items: stretch;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: .25rem;
+  border: 1px solid var(--cy-line);
+  background: var(--cy-ink);
+  overflow: hidden;
+}
+
+.cy-zoomctl__btn,
+.cy-zoomctl__pct {
+  height: 100%;
+  padding: 0 .5rem;
+  font-size: 11px;
+  color: var(--cy-faint);
+  transition: color .15s, background-color .15s;
+}
+
+.cy-zoomctl__btn:hover,
+.cy-zoomctl__pct:hover { color: var(--cy-accent); background: var(--cy-hover); }
+
+.cy-zoomctl__pct {
+  min-width: 40px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  border-left: 1px solid var(--cy-line);
+  border-right: 1px solid var(--cy-line);
+}
+
+.cy-zoomctl__btn--fit {
+  border-left: 1px solid var(--cy-line);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
 .cy-breadcrumb {
   margin-left: auto;
   font-size: 11px;
@@ -259,6 +297,46 @@
   align-items: start;
   gap: 1rem;
 }
+
+/* ---------- zoom ----------
+   cy-zoom-scaler is sized in JS (see the apply-zoom clientside callback in
+   dash_apps.py) to the tree's natural size times the current zoom level -
+   that reserved box is what .cy-canvas's own overflow:auto actually scrolls
+   against. cy-zoom-content (#cy-tree) is pulled out of flow and just gets a
+   CSS transform: scale(), which repaints pixels without affecting layout,
+   so it has to be sized externally like this or it wouldn't shrink/grow
+   the scrollable area at all. */
+
+.cy-zoom-scaler {
+  position: relative;
+}
+
+.cy-zoom-content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: top left;
+}
+
+/* Below 50% zoom, shrunk text has crossed from "smaller" into "an
+   unreadable blur" - rather than keep rendering it, swap to plain
+   color-coded blocks (each kind already has its own border/dot color) with
+   a native title-attribute tooltip on hover for the name. */
+.cy-zoom-compact .cy-box__label .name,
+.cy-zoom-compact .cy-box__status,
+.cy-zoom-compact .cy-fn-list,
+.cy-zoom-compact .cy-ghost__label span:last-child,
+.cy-zoom-compact .cy-ghost__status {
+  display: none;
+}
+
+.cy-zoom-compact .cy-dot {
+  width: 14px;
+  height: 14px;
+}
+
+.cy-zoom-compact .cy-box__header { justify-content: center; }
+.cy-zoom-compact .cy-box__expand { display: none; }
 
 /* ---------- boxes (package / module / class) ---------- */
 
@@ -927,6 +1005,8 @@
 
   /* touch targets a bit more forgiving than the mouse-tuned desktop sizes */
   .cy-toggle { height: 32px; padding: 0 .75rem; }
+  .cy-zoomctl { height: 32px; }
+  .cy-zoomctl__btn, .cy-zoomctl__pct { padding: 0 .65rem; }
   .cy-box__expand { width: 26px; height: 26px; }
   .cy-fn-pill { padding: .35rem .6rem; }
   .cy-list-btn { padding: .35rem 0; }

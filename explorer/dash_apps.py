@@ -118,10 +118,18 @@ graph_app.layout = html.Div(className='cy-app', children=[
   # connector lines) - same underlying elements/expanded/selection state,
   # just two different renderers for it (see render_tree below).
   dcc.Store(id='view-mode-store', data='tree'),
+  # Current zoom level as a percentage (100 = actual size). Purely a
+  # presentation concern - never touches elements/expanded/selection - so
+  # it's read and written entirely clientside (see the zoom callbacks
+  # below), same no-server-round-trip reasoning as selection highlighting.
+  dcc.Store(id='zoom-level-store', data=100),
   # Write-only target for the clientside selection-highlight callback below
   # (a clientside_callback needs some Output to write to, even though
   # nothing ever reads this one back).
   dcc.Store(id='selection-sync-store', data=None),
+  # Same write-only pattern, for the clientside callback that applies the
+  # zoom transform.
+  dcc.Store(id='zoom-sync-store', data=None),
   *_CHAT_STORES,
 
   html.Div(className='cy-shell', children=[
@@ -139,6 +147,13 @@ graph_app.layout = html.Div(className='cy-app', children=[
       ]),
       html.Span(className='cy-vdivider'),
       html.Button('view: tree', id='toggle-view-mode', className='cy-toggle'),
+      html.Div(className='cy-zoomctl', children=[
+        html.Button('−', id='zoom-out', className='cy-zoomctl__btn', title='Zoom out', **{'aria-label': 'Zoom out'}),
+        html.Button('100%', id='zoom-reset', className='cy-zoomctl__pct', title='Reset zoom to 100%'),
+        html.Button('+', id='zoom-in', className='cy-zoomctl__btn', title='Zoom in', **{'aria-label': 'Zoom in'}),
+        html.Button('fit', id='zoom-fit', className='cy-zoomctl__btn cy-zoomctl__btn--fit', title='Zoom to fit the whole graph'),
+      ]),
+      html.Span(className='cy-vdivider'),
       html.Button('edges: on', id='toggle-edges', className='cy-toggle cy-toggle--active'),
       html.Button('tests: hide', id='toggle-tests', className='cy-toggle cy-toggle--active'),
       html.Button('vendor: hide', id='toggle-vendor', className='cy-toggle cy-toggle--active'),
@@ -149,7 +164,16 @@ graph_app.layout = html.Div(className='cy-app', children=[
       html.Div(className='cy-main', children=[
         html.Div(className='cy-canvas', children=[
           html.Div(id='cy-tag', className='cy-canvas__tag'),
-          html.Div(id='cy-tree'),
+          # cy-zoom-scaler is sized (inline, by the clientside apply_zoom
+          # callback below) to the tree's natural size times the current
+          # zoom level - that's what actually shrinks/grows the scrollable
+          # footprint .cy-canvas's own overflow:auto reacts to. cy-tree
+          # itself is absolutely positioned inside it and just gets a CSS
+          # transform: scale(), which only repaints pixels and never
+          # affects layout on its own.
+          html.Div(id='cy-zoom-scaler', className='cy-zoom-scaler', children=[
+            html.Div(id='cy-tree', className='cy-zoom-content'),
+          ]),
           html.Div(className='cy-canvas__footer', children=[
             html.Div(className='cy-legend', children=[
               html.Div([html.Span(className='cy-dot', style={'background': 'var(--cy-repo)'}), html.Span('repo')], className='cy-legend__item'),
@@ -271,6 +295,114 @@ def toggle_view_mode(_n_clicks, current):
 )
 def render_view_mode_toggle(view_mode):
   return 'view: graph' if view_mode == 'graph' else 'view: tree'
+
+
+# Entirely clientside - the button-click -> new zoom % logic never needs
+# elements/expanded/selection, so there's no reason to pay for a server
+# round trip on every zoom click (same reasoning as the selection-highlight
+# clientside callback further down). django-plotly-dash's clientside
+# dispatch doesn't confirm support for dash_clientside.callback_context (its
+# server-side CallbackContext shim is known to be missing pieces - see
+# _parse_triggered above), so which button fired is tracked by hand instead:
+# a closure comparing each call's n_clicks against what it saw last time.
+graph_app.clientside_callback(
+  """
+  function(nIn, nOut, nReset, nFit, currentZoom) {
+    // MIN is a floor for manual +/- stepping only, chosen so each step stays
+    // usable - "fit" has its own, much lower floor (FIT_MIN) because its
+    // whole job is showing the entire graph even when that legitimately
+    // needs a smaller scale than manual zooming should ever land on.
+    var MIN = 20, MAX = 200, STEP = 20, FIT_MIN = 5;
+    var prev = window._cyZoomClicks || {inN: 0, outN: 0, resetN: 0, fitN: 0};
+    var zoom = currentZoom || 100;
+    var changed = true;
+
+    if ((nIn || 0) > prev.inN) {
+      zoom = Math.min(MAX, zoom + STEP);
+    } else if ((nOut || 0) > prev.outN) {
+      zoom = Math.max(MIN, zoom - STEP);
+    } else if ((nReset || 0) > prev.resetN) {
+      zoom = 100;
+    } else if ((nFit || 0) > prev.fitN) {
+      var viewport = document.querySelector('.cy-canvas');
+      var content = document.getElementById('cy-tree');
+      if (viewport && content) {
+        // Compact mode (see canopy.css) hides text and shrinks the tree's
+        // own natural size - measuring while it's active would fit against
+        // that collapsed layout instead of the real one, so it's lifted
+        // for the measurement and left for the apply-zoom callback (which
+        // runs right after, off the zoom value returned below) to redecide.
+        var wasCompact = content.classList.contains('cy-zoom-compact');
+        if (wasCompact) { content.classList.remove('cy-zoom-compact'); }
+        if (content.scrollWidth) {
+          // clientWidth includes the canvas's own left/right padding, which
+          // isn't available for content - subtract it, or "fit" leaves a
+          // residual horizontal scrollbar exactly padding-wide.
+          var style = window.getComputedStyle(viewport);
+          var availWidth = viewport.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+          var fitScale = Math.min(availWidth / content.scrollWidth, 1);
+          zoom = Math.min(MAX, Math.max(FIT_MIN, Math.floor(fitScale * 100)));
+        }
+        if (wasCompact) { content.classList.add('cy-zoom-compact'); }
+      }
+    } else {
+      changed = false;
+    }
+
+    window._cyZoomClicks = {inN: nIn || 0, outN: nOut || 0, resetN: nReset || 0, fitN: nFit || 0};
+    return changed ? zoom : window.dash_clientside.no_update;
+  }
+  """,
+  Output('zoom-level-store', 'data'),
+  Input('zoom-in', 'n_clicks'),
+  Input('zoom-out', 'n_clicks'),
+  Input('zoom-reset', 'n_clicks'),
+  Input('zoom-fit', 'n_clicks'),
+  State('zoom-level-store', 'data'),
+  prevent_initial_call=True,
+)
+
+
+@graph_app.callback(
+  Output('zoom-reset', 'children'),
+  Input('zoom-level-store', 'data'),
+)
+def render_zoom_label(zoom_pct):
+  return f'{zoom_pct}%'
+
+
+# Applies the actual zoom: sizes cy-zoom-scaler to the tree's natural size
+# times the zoom level (that's what .cy-canvas's overflow:auto scrolls
+# against) and scales cy-tree itself to match. Re-runs whenever the tree's
+# content changes too (not just the zoom level) since expand/collapse,
+# filtering, or loading a new repo all change the natural size a given zoom
+# % now maps to. Below 50%, text has shrunk past the point of being legible
+# rather than blurry, so cy-zoom-compact (see canopy.css) swaps it out for
+# plain color-coded blocks - the boxes' kind-color border/dot plus a native
+# title tooltip on hover, same info without rendering illegible glyphs.
+graph_app.clientside_callback(
+  """
+  function(zoomPct, _treeChildren) {
+    var zoom = (zoomPct || 100) / 100;
+    var scaler = document.getElementById('cy-zoom-scaler');
+    var content = document.getElementById('cy-tree');
+    if (scaler && content) {
+      // Compact mode changes the tree's natural (untransformed) size, so
+      // it has to be toggled *before* scrollWidth/scrollHeight are read
+      // below - otherwise a zoom change that also crosses the compact
+      // threshold measures against the stale, pre-toggle layout.
+      content.classList.toggle('cy-zoom-compact', zoom <= 0.5);
+      content.style.transform = 'scale(' + zoom + ')';
+      scaler.style.width = (content.scrollWidth * zoom) + 'px';
+      scaler.style.height = (content.scrollHeight * zoom) + 'px';
+    }
+    return window.dash_clientside.no_update;
+  }
+  """,
+  Output('zoom-sync-store', 'data'),
+  Input('zoom-level-store', 'data'),
+  Input('cy-tree', 'children'),
+)
 
 
 @graph_app.callback(
@@ -528,7 +660,7 @@ def _render_container(node_id, elements, children_index, expanded, test_noise, v
     html.Button([
       html.Span(className='cy-dot'),
       html.Span(f"{kind} / {data['label']}", className='name'),
-    ], id=_click_id('select', node_id), className=label_className, **{'data-node-id': node_id}),
+    ], id=_click_id('select', node_id), className=label_className, title=data.get('name', data['label']), **{'data-node-id': node_id}),
   ]
   if function_children:
     header_children.append(html.Button(
@@ -556,8 +688,8 @@ def _repo_link_label(repo_meta):
   ]
   url = repo_meta.get('url')
   if url:
-    return html.A(content, href=url, target='_blank', rel='noreferrer', className='cy-box__label cy-k-repo')
-  return html.Div(content, className='cy-box__label cy-k-repo')
+    return html.A(content, href=url, target='_blank', rel='noreferrer', className='cy-box__label cy-k-repo', title=name)
+  return html.Div(content, className='cy-box__label cy-k-repo', title=name)
 
 
 @graph_app.callback(
@@ -634,7 +766,7 @@ def _orgchart_node_box(node_id, elements, children_index, expanded, test_noise, 
     html.Button([
       html.Span(className='cy-dot'),
       html.Span(f"{kind} / {data['label']}", className='name'),
-    ], id=_click_id('select', node_id), className=label_className, **{'data-node-id': node_id}),
+    ], id=_click_id('select', node_id), className=label_className, title=data.get('name', data['label']), **{'data-node-id': node_id}),
   ]
   if function_children:
     header_children.append(html.Button(
