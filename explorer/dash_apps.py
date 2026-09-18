@@ -114,6 +114,10 @@ graph_app.layout = html.Div(className='cy-app', children=[
   dcc.Store(id='show-edges-store', data=True),
   dcc.Store(id='hide-tests-store', data=True),
   dcc.Store(id='hide-vendor-store', data=True),
+  # 'tree' (nested containment boxes) or 'graph' (top-down org-chart with
+  # connector lines) - same underlying elements/expanded/selection state,
+  # just two different renderers for it (see render_tree below).
+  dcc.Store(id='view-mode-store', data='tree'),
   # Write-only target for the clientside selection-highlight callback below
   # (a clientside_callback needs some Output to write to, even though
   # nothing ever reads this one back).
@@ -134,6 +138,7 @@ graph_app.layout = html.Div(className='cy-app', children=[
         ]),
       ]),
       html.Span(className='cy-vdivider'),
+      html.Button('view: tree', id='toggle-view-mode', className='cy-toggle'),
       html.Button('edges: on', id='toggle-edges', className='cy-toggle cy-toggle--active'),
       html.Button('tests: hide', id='toggle-tests', className='cy-toggle cy-toggle--active'),
       html.Button('vendor: hide', id='toggle-vendor', className='cy-toggle cy-toggle--active'),
@@ -248,6 +253,24 @@ def _make_toggle_callback(button_id, store_id):
 _make_toggle_callback('toggle-edges', 'show-edges-store')
 _make_toggle_callback('toggle-tests', 'hide-tests-store')
 _make_toggle_callback('toggle-vendor', 'hide-vendor-store')
+
+
+@graph_app.callback(
+  Output('view-mode-store', 'data'),
+  Input('toggle-view-mode', 'n_clicks'),
+  State('view-mode-store', 'data'),
+  prevent_initial_call=True,
+)
+def toggle_view_mode(_n_clicks, current):
+  return 'graph' if current == 'tree' else 'tree'
+
+
+@graph_app.callback(
+  Output('toggle-view-mode', 'children'),
+  Input('view-mode-store', 'data'),
+)
+def render_view_mode_toggle(view_mode):
+  return 'view: graph' if view_mode == 'graph' else 'view: tree'
 
 
 @graph_app.callback(
@@ -522,12 +545,29 @@ def _render_container(node_id, elements, children_index, expanded, test_noise, v
   return html.Div(box_body, className=box_className)
 
 
+def _repo_link_label(repo_meta):
+  """The repo root's header: a GitHub link when a repo URL is known,
+  otherwise a plain label - same content either way, just linkified."""
+  repo_meta = repo_meta or {}
+  name = repo_meta.get('name') or 'repo'
+  content = [
+    html.Span(className='cy-dot', style={'background': 'var(--cy-repo)'}),
+    html.Span(f'repo / {name}', className='name'),
+  ]
+  url = repo_meta.get('url')
+  if url:
+    return html.A(content, href=url, target='_blank', rel='noreferrer', className='cy-box__label cy-k-repo')
+  return html.Div(content, className='cy-box__label cy-k-repo')
+
+
 @graph_app.callback(
   Output('cy-tree', 'children'),
   Input('elements-store', 'data'),
   Input('expanded-store', 'data'),
   Input('hide-tests-store', 'data'),
   Input('hide-vendor-store', 'data'),
+  Input('view-mode-store', 'data'),
+  Input('repo-meta-store', 'data'),
   # State, not Input: selecting a node is by far the most frequent
   # interaction, and doesn't change which boxes/pills exist - only which
   # one is highlighted. Re-rendering and re-serializing the *entire* tree
@@ -539,25 +579,112 @@ def _render_container(node_id, elements, children_index, expanded, test_noise, v
   # node is currently selected.
   State('selected-node-store', 'data'),
 )
-def render_tree(elements, expanded, hide_tests, hide_vendor, selected_id):
+def render_tree(elements, expanded, hide_tests, hide_vendor, view_mode='tree', repo_meta=None, selected_id=None):
   if not elements:
     return html.Div('No analysis loaded.', className='cy-box__status')
 
   test_noise = noise_ids_for_tests(elements) if hide_tests else set()
   vendor_noise = vendor_noise_ids(elements) if hide_vendor else set()
   children_index = index_children(elements)
-
   top_level = children_index.get('repo', [])
   containers, _functions, ghosts = _partition_children(top_level, test_noise, vendor_noise)
   # _functions is always empty in practice - a function always nests under a
   # module or class, never directly under the repo - but _partition_children
   # handles every level uniformly regardless, so nothing special-cases that.
+
+  if view_mode == 'graph':
+    return _render_orgchart(containers, ghosts, elements, children_index, expanded, test_noise, vendor_noise, selected_id, repo_meta)
+
   boxes = [
     _render_container(child['data']['id'], elements, children_index, expanded, test_noise, vendor_noise, selected_id)
     for child in containers
   ]
   boxes.extend(_ghost_box(ghost_data, category, elements) for ghost_data, category in ghosts)
-  return html.Div(boxes, className='cy-grid')
+  return html.Div([
+    html.Div([_repo_link_label(repo_meta)], className='cy-box__header'),
+    html.Div(boxes, className='cy-grid', style={'marginTop': '.75rem'}),
+  ], className='cy-box cy-box--repo cy-box--root')
+
+
+# --- org-chart view: same elements/expanded/selection state as the nested-
+# box tree above, rendered instead as a top-down hierarchy connected by
+# lines (classic CSS org-chart via nested <ul>/<li> lists), so switching
+# view modes never changes what's expanded or selected. ------------------
+
+def _orgchart_status(node_id, function_children, expanded, selected_id):
+  n = len(function_children)
+  if node_id in expanded:
+    return html.Div([_fn_pill(f['data'], selected_id) for f in function_children], className='cy-fn-list')
+  return html.Div(f"collapsed · click to expand ({n} fn{'s' if n != 1 else ''})", className='cy-box__status')
+
+
+def _orgchart_node_box(node_id, elements, children_index, expanded, test_noise, vendor_noise, selected_id):
+  node = _find_element(elements, node_id)
+  data = node['data']
+  kind = data['kind']
+  function_children = [
+    child for child in children_index.get(node_id, [])
+    if child['data']['kind'] == 'function'
+    and child['data']['id'] not in test_noise
+    and child['data']['id'] not in vendor_noise
+  ]
+
+  label_className = 'cy-box__label' + (' is-selected' if node_id == selected_id else '')
+  header_children = [
+    html.Button([
+      html.Span(className='cy-dot'),
+      html.Span(f"{kind} / {data['label']}", className='name'),
+    ], id=_click_id('select', node_id), className=label_className, **{'data-node-id': node_id}),
+  ]
+  if function_children:
+    header_children.append(html.Button(
+      '−' if node_id in expanded else '+',
+      id=_click_id('expand', node_id),
+      className='cy-box__expand',
+    ))
+
+  box_className = f'cy-box cy-box--{kind} cy-og-node' + (' is-selected' if node_id == selected_id else '')
+  box_body = [html.Div(header_children, className='cy-box__header')]
+  if function_children:
+    box_body.append(_orgchart_status(node_id, function_children, expanded, selected_id))
+  return html.Div(box_body, className=box_className)
+
+
+def _orgchart_ghost_li(ghost_data, category, elements):
+  return html.Li(_ghost_box(ghost_data, category, elements))
+
+
+def _orgchart_li(node_id, elements, children_index, expanded, test_noise, vendor_noise, selected_id):
+  node_box = _orgchart_node_box(node_id, elements, children_index, expanded, test_noise, vendor_noise, selected_id)
+  containers, _functions, ghosts = _partition_children(children_index.get(node_id, []), test_noise, vendor_noise)
+
+  li_children = [node_box]
+  child_items = [
+    _orgchart_li(child['data']['id'], elements, children_index, expanded, test_noise, vendor_noise, selected_id)
+    for child in containers
+  ]
+  child_items.extend(_orgchart_ghost_li(ghost_data, category, elements) for ghost_data, category in ghosts)
+  if child_items:
+    li_children.append(html.Ul(child_items))
+  return html.Li(li_children)
+
+
+def _render_orgchart(containers, ghosts, elements, children_index, expanded, test_noise, vendor_noise, selected_id, repo_meta):
+  repo_box = html.Div([
+    html.Div([_repo_link_label(repo_meta)], className='cy-box__header'),
+  ], className='cy-box cy-box--repo cy-og-node')
+
+  child_items = [
+    _orgchart_li(child['data']['id'], elements, children_index, expanded, test_noise, vendor_noise, selected_id)
+    for child in containers
+  ]
+  child_items.extend(_orgchart_ghost_li(ghost_data, category, elements) for ghost_data, category in ghosts)
+
+  root_children = [repo_box]
+  if child_items:
+    root_children.append(html.Ul(child_items))
+
+  return html.Div(html.Ul(html.Li(root_children)), className='cy-orgchart')
 
 
 # Runs entirely in the browser, no server round-trip: clears whichever
