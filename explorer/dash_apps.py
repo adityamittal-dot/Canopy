@@ -147,13 +147,21 @@ graph_app.layout = html.Div(className='cy-app', children=[
       ]),
       html.Span(className='cy-vdivider'),
       html.Button('view: tree', id='toggle-view-mode', className='cy-toggle'),
-      html.Div(className='cy-zoomctl', children=[
-        html.Button('−', id='zoom-out', className='cy-zoomctl__btn', title='Zoom out', **{'aria-label': 'Zoom out'}),
-        html.Button('100%', id='zoom-reset', className='cy-zoomctl__pct', title='Reset zoom to 100%'),
-        html.Button('+', id='zoom-in', className='cy-zoomctl__btn', title='Zoom in', **{'aria-label': 'Zoom in'}),
-        html.Button('fit', id='zoom-fit', className='cy-zoomctl__btn cy-zoomctl__btn--fit', title='Zoom to fit the whole graph'),
+      # Zoom is a tree-view-only option (the grid already reflows to fit,
+      # and the org-chart view is meant to always render at its natural
+      # size, same as before zoom existed) - hidden outright rather than
+      # just disabled when view-mode-store is 'graph' (see
+      # render_zoom_control_visibility below). Grouped with its own
+      # divider so hiding it doesn't leave two adjacent dividers behind.
+      html.Div(id='cy-zoom-control-group', className='cy-zoom-control-group', children=[
+        html.Div(className='cy-zoomctl', children=[
+          html.Button('−', id='zoom-out', className='cy-zoomctl__btn', title='Zoom out', **{'aria-label': 'Zoom out'}),
+          html.Button('100%', id='zoom-reset', className='cy-zoomctl__pct', title='Reset zoom to 100%'),
+          html.Button('+', id='zoom-in', className='cy-zoomctl__btn', title='Zoom in', **{'aria-label': 'Zoom in'}),
+          html.Button('fit', id='zoom-fit', className='cy-zoomctl__btn cy-zoomctl__btn--fit', title='Zoom to fit the whole graph'),
+        ]),
+        html.Span(className='cy-vdivider'),
       ]),
-      html.Span(className='cy-vdivider'),
       html.Button('edges: on', id='toggle-edges', className='cy-toggle cy-toggle--active'),
       html.Button('tests: hide', id='toggle-tests', className='cy-toggle cy-toggle--active'),
       html.Button('vendor: hide', id='toggle-vendor', className='cy-toggle cy-toggle--active'),
@@ -297,6 +305,14 @@ def render_view_mode_toggle(view_mode):
   return 'view: graph' if view_mode == 'graph' else 'view: tree'
 
 
+@graph_app.callback(
+  Output('cy-zoom-control-group', 'style'),
+  Input('view-mode-store', 'data'),
+)
+def render_zoom_control_visibility(view_mode):
+  return {'display': 'none'} if view_mode == 'graph' else {}
+
+
 # Entirely clientside - the button-click -> new zoom % logic never needs
 # elements/expanded/selection, so there's no reason to pay for a server
 # round trip on every zoom click (same reasoning as the selection-highlight
@@ -380,10 +396,15 @@ def render_zoom_label(zoom_pct):
 # rather than blurry, so cy-zoom-compact (see canopy.css) swaps it out for
 # plain color-coded blocks - the boxes' kind-color border/dot plus a native
 # title tooltip on hover, same info without rendering illegible glyphs.
+#
+# Zoom is tree-view only (see render_zoom_control_visibility above) - the
+# org-chart view always renders at its natural size, same as before zoom
+# existed, regardless of whatever zoom-level-store is currently holding
+# for the tree view.
 graph_app.clientside_callback(
   """
-  function(zoomPct, _treeChildren) {
-    var zoom = (zoomPct || 100) / 100;
+  function(zoomPct, viewMode, _treeChildren) {
+    var zoom = viewMode === 'graph' ? 1 : (zoomPct || 100) / 100;
     var scaler = document.getElementById('cy-zoom-scaler');
     var content = document.getElementById('cy-tree');
     if (scaler && content) {
@@ -401,6 +422,7 @@ graph_app.clientside_callback(
   """,
   Output('zoom-sync-store', 'data'),
   Input('zoom-level-store', 'data'),
+  Input('view-mode-store', 'data'),
   Input('cy-tree', 'children'),
 )
 
