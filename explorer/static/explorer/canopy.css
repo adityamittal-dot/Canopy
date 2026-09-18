@@ -217,6 +217,12 @@
   color: var(--cy-accent);
 }
 
+.cy-zoom-control-group {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+}
+
 .cy-zoomctl {
   display: flex;
   align-items: stretch;
