@@ -9,6 +9,7 @@ from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.core.validators import URLValidator
 from django.db import IntegrityError
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_http_methods
@@ -34,6 +35,20 @@ _RATE_LIMIT_MAX_REQUESTS = 5
 
 def dash_test(request):
   return render(request, 'explorer/dash_test.html')
+
+
+def healthz(request):
+  """Cheap liveness check - no DB/auth work, just confirms the process is up.
+
+  Used by the cron-job.org keep-alive ping and by the wake-up splash page
+  (see docs/wake.html) to poll whether a sleeping Render instance has
+  finished booting. The splash page polls this cross-origin from GitHub
+  Pages, hence the explicit CORS header - everything else in this app is
+  same-origin and doesn't need one.
+  """
+  response = HttpResponse('ok')
+  response['Access-Control-Allow-Origin'] = '*'
+  return response
 
 
 def _normalize_url(raw_url: str) -> str:

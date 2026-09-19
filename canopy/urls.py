@@ -22,6 +22,7 @@ from explorer import views as explorer_views
 
 urlpatterns = [
     path('', RedirectView.as_view(pattern_name='analyze', permanent=False)),
+    path('healthz/', explorer_views.healthz, name='healthz'),
     path('admin/', admin.site.urls),
     path('django_plotly_dash/', include('django_plotly_dash.urls')),
     path('dash-test/', explorer_views.dash_test, name='dash_test'),
