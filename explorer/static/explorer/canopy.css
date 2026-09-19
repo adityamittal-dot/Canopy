@@ -304,14 +304,21 @@
   gap: 1rem;
 }
 
-/* ---------- zoom ----------
+/* ---------- zoom (graph view only) ----------
    cy-zoom-scaler is sized in JS (see the apply-zoom clientside callback in
-   dash_apps.py) to the tree's natural size times the current zoom level -
-   that reserved box is what .cy-canvas's own overflow:auto actually scrolls
-   against. cy-zoom-content (#cy-tree) is pulled out of flow and just gets a
-   CSS transform: scale(), which repaints pixels without affecting layout,
-   so it has to be sized externally like this or it wouldn't shrink/grow
-   the scrollable area at all. */
+   dash_apps.py) to the org-chart's natural size times the current zoom
+   level - that reserved box is what .cy-canvas's own overflow:auto actually
+   scrolls against. cy-zoom-content (#cy-tree) is pulled out of flow and
+   just gets a CSS transform: scale(), which repaints pixels without
+   affecting layout, so it has to be sized externally like this or it
+   wouldn't shrink/grow the scrollable area at all.
+
+   Tree view doesn't zoom, so the same JS toggles cy-zoom-content--flow
+   instead: back to plain document flow, no absolute positioning, so the
+   nested-box grid resolves its own width against .cy-canvas and fills it
+   edge to edge (the same layout it had before zoom/org-chart existed),
+   rather than shrink-wrapping to content as an unsized absolutely-
+   positioned box would. */
 
 .cy-zoom-scaler {
   position: relative;
@@ -322,6 +329,10 @@
   top: 0;
   left: 0;
   transform-origin: top left;
+}
+
+.cy-zoom-content--flow {
+  position: static;
 }
 
 /* Below 50% zoom, shrunk text has crossed from "smaller" into "an

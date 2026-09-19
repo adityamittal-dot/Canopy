@@ -147,12 +147,11 @@ graph_app.layout = html.Div(className='cy-app', children=[
       ]),
       html.Span(className='cy-vdivider'),
       html.Button('view: tree', id='toggle-view-mode', className='cy-toggle'),
-      # Zoom is a tree-view-only option (the grid already reflows to fit,
-      # and the org-chart view is meant to always render at its natural
-      # size, same as before zoom existed) - hidden outright rather than
-      # just disabled when view-mode-store is 'graph' (see
-      # render_zoom_control_visibility below). Grouped with its own
-      # divider so hiding it doesn't leave two adjacent dividers behind.
+      # Zoom is a graph-view-only option (the tree's grid already reflows to
+      # fill the canvas at its natural size, same as before zoom existed) -
+      # hidden outright rather than just disabled when view-mode-store is
+      # 'tree' (see render_zoom_control_visibility below). Grouped with its
+      # own divider so hiding it doesn't leave two adjacent dividers behind.
       html.Div(id='cy-zoom-control-group', className='cy-zoom-control-group', children=[
         html.Div(className='cy-zoomctl', children=[
           html.Button('−', id='zoom-out', className='cy-zoomctl__btn', title='Zoom out', **{'aria-label': 'Zoom out'}),
@@ -310,7 +309,7 @@ def render_view_mode_toggle(view_mode):
   Input('view-mode-store', 'data'),
 )
 def render_zoom_control_visibility(view_mode):
-  return {'display': 'none'} if view_mode == 'graph' else {}
+  return {'display': 'none'} if view_mode == 'tree' else {}
 
 
 # Entirely clientside - the button-click -> new zoom % logic never needs
@@ -387,35 +386,46 @@ def render_zoom_label(zoom_pct):
   return f'{zoom_pct}%'
 
 
-# Applies the actual zoom: sizes cy-zoom-scaler to the tree's natural size
-# times the zoom level (that's what .cy-canvas's overflow:auto scrolls
-# against) and scales cy-tree itself to match. Re-runs whenever the tree's
-# content changes too (not just the zoom level) since expand/collapse,
-# filtering, or loading a new repo all change the natural size a given zoom
-# % now maps to. Below 50%, text has shrunk past the point of being legible
-# rather than blurry, so cy-zoom-compact (see canopy.css) swaps it out for
-# plain color-coded blocks - the boxes' kind-color border/dot plus a native
-# title tooltip on hover, same info without rendering illegible glyphs.
+# Applies the actual zoom: sizes cy-zoom-scaler to the org-chart's natural
+# size times the zoom level (that's what .cy-canvas's overflow:auto scrolls
+# against) and scales cy-tree itself to match. Re-runs whenever the content
+# changes too (not just the zoom level) since expand/collapse, filtering, or
+# loading a new repo all change the natural size a given zoom % now maps to.
+# Below 50%, text has shrunk past the point of being legible rather than
+# blurry, so cy-zoom-compact (see canopy.css) swaps it out for plain
+# color-coded blocks - the boxes' kind-color border/dot plus a native title
+# tooltip on hover, same info without rendering illegible glyphs.
 #
-# Zoom is tree-view only (see render_zoom_control_visibility above) - the
-# org-chart view always renders at its natural size, same as before zoom
-# existed, regardless of whatever zoom-level-store is currently holding
-# for the tree view.
+# Zoom is graph-view only (see render_zoom_control_visibility above). Tree
+# view is reset to plain document flow (cy-zoom-content--flow, see
+# canopy.css) instead - it has no zoom/scale/absolute-positioning applied,
+# so its grid reflows to fill the full canvas width like any normal block
+# layout, rather than shrink-wrapping to content as it would if left
+# absolutely positioned with no explicit width.
 graph_app.clientside_callback(
   """
   function(zoomPct, viewMode, _treeChildren) {
-    var zoom = viewMode === 'graph' ? 1 : (zoomPct || 100) / 100;
     var scaler = document.getElementById('cy-zoom-scaler');
     var content = document.getElementById('cy-tree');
     if (scaler && content) {
-      // Compact mode changes the tree's natural (untransformed) size, so
-      // it has to be toggled *before* scrollWidth/scrollHeight are read
-      // below - otherwise a zoom change that also crosses the compact
-      // threshold measures against the stale, pre-toggle layout.
-      content.classList.toggle('cy-zoom-compact', zoom <= 0.5);
-      content.style.transform = 'scale(' + zoom + ')';
-      scaler.style.width = (content.scrollWidth * zoom) + 'px';
-      scaler.style.height = (content.scrollHeight * zoom) + 'px';
+      if (viewMode === 'tree') {
+        content.classList.remove('cy-zoom-compact');
+        content.classList.add('cy-zoom-content--flow');
+        content.style.transform = '';
+        scaler.style.width = '';
+        scaler.style.height = '';
+      } else {
+        var zoom = (zoomPct || 100) / 100;
+        content.classList.remove('cy-zoom-content--flow');
+        // Compact mode changes the content's natural (untransformed) size,
+        // so it has to be toggled *before* scrollWidth/scrollHeight are
+        // read below - otherwise a zoom change that also crosses the
+        // compact threshold measures against the stale, pre-toggle layout.
+        content.classList.toggle('cy-zoom-compact', zoom <= 0.5);
+        content.style.transform = 'scale(' + zoom + ')';
+        scaler.style.width = (content.scrollWidth * zoom) + 'px';
+        scaler.style.height = (content.scrollHeight * zoom) + 'px';
+      }
     }
     return window.dash_clientside.no_update;
   }
