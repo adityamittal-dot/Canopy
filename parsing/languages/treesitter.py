@@ -212,25 +212,49 @@ class TreeSitterAnalyzer:
         return symbols
 
     def _walk(self, node: Node, scope: list[str], symbols: list[Symbol], file: str):
-        for child in node.named_children:
-            if child.type in self._bounded_types and self._passes_filter(child):
-                self._record(child, scope, symbols, file)
-            elif child.type in self.spec.transparent_scope_types:
-                scope_name = _resolve_name(child, self.spec.transparent_scope_types[child.type])
-                new_scope = scope + [scope_name] if scope_name else scope
-                self._walk(child, new_scope, symbols, file)
-            else:
-                self._walk(child, scope, symbols, file)
+        # Iterative pre-order over an explicit stack, not Python recursion -
+        # real-world files (deeply nested if/else or switch chains, generated
+        # code, ...) can nest well past Python's ~1000-frame recursion limit,
+        # which used to surface as an uncaught RecursionError here. Each
+        # stack entry is (node, scope, pending_record): pending_record means
+        # `node` itself is a not-yet-recorded definition, so its symbol must
+        # be appended (via _record) before its own children are pushed -
+        # doing that at pop time (rather than when the entry is pushed)
+        # keeps symbols in the same left-to-right document order the old
+        # recursive version produced, which graph_data.py's parent-lookup
+        # relies on. Children are pushed in reverse so the leftmost pops
+        # (and so gets fully expanded) first, matching recursive pre-order.
+        stack: list[tuple[Node, list[str], bool]] = [(node, scope, False)]
+        while stack:
+            current, current_scope, pending_record = stack.pop()
+            if pending_record:
+                new_scope = self._record(current, current_scope, symbols, file)
+                if new_scope is None:
+                    continue  # name resolution failed - skip this subtree, as before
+                current_scope = new_scope
+
+            for child in reversed(current.named_children):
+                if child.type in self._bounded_types and self._passes_filter(child):
+                    stack.append((child, current_scope, True))
+                elif child.type in self.spec.transparent_scope_types:
+                    scope_name = _resolve_name(child, self.spec.transparent_scope_types[child.type])
+                    new_scope = current_scope + [scope_name] if scope_name else current_scope
+                    stack.append((child, new_scope, False))
+                else:
+                    stack.append((child, current_scope, False))
 
     def _passes_filter(self, node: Node) -> bool:
         predicate = self.spec.definition_filter.get(node.type)
         return predicate is None or predicate(node)
 
-    def _record(self, node: Node, scope: list[str], symbols: list[Symbol], file: str):
+    def _record(self, node: Node, scope: list[str], symbols: list[Symbol], file: str) -> list[str] | None:
+        """Append `node`'s Symbol and return the scope its own children should
+        see - or None if name resolution failed, telling the caller to skip
+        its subtree entirely (matching the pre-iterative behavior)."""
         name_field = self.spec.name_field_by_type.get(node.type, 'name')
         name = _resolve_name(node, name_field)
         if name is None:
-            return
+            return None
         if node.type in self.spec.receiver_field:
             receiver = _resolve_receiver_type(node, self.spec.receiver_field[node.type])
             if receiver:
@@ -249,7 +273,7 @@ class TreeSitterAnalyzer:
             complexity=self._compute_complexity(node) if kind == 'function' else 1,
             language=self.spec.language_id,
         ))
-        self._walk(node, new_scope, symbols, file)
+        return new_scope
 
     def _doc_comment(self, def_node: Node) -> str | None:
         # Adjacency is checked as "at most one row of gap" rather than an
@@ -288,52 +312,45 @@ class TreeSitterAnalyzer:
     # --- bounded walks (stop at nested function/class boundaries) ------
 
     def _extract_calls(self, def_node: Node) -> list[str]:
+        # Iterative for the same reason as _walk above - a single function
+        # body can nest well past Python's recursion limit.
         calls: list[str] = []
-
-        def visit(node: Node):
+        stack = list(reversed(def_node.named_children))
+        while stack:
+            node = stack.pop()
             if node.type in self._bounded_types:
-                return
+                continue
             reader = self.spec.call_specs.get(node.type)
             if reader is not None:
                 text = reader(node)
                 if text:
                     calls.append(_normalize_callee(text))
-            for child in node.named_children:
-                visit(child)
-
-        for child in def_node.named_children:
-            visit(child)
+            stack.extend(reversed(node.named_children))
         return calls
 
     def _compute_complexity(self, def_node: Node) -> int:
         complexity = 1
-
-        def visit(node: Node):
-            nonlocal complexity
+        stack = list(reversed(def_node.named_children))
+        while stack:
+            node = stack.pop()
             if node.type in self._bounded_types:
-                return
+                continue
             if node.type in self.spec.branch_node_types:
                 complexity += 1
-            for child in node.named_children:
-                visit(child)
-
-        for child in def_node.named_children:
-            visit(child)
+            stack.extend(reversed(node.named_children))
         return complexity
 
     # --- imports ----------------------------------------------------------
 
     def extract_imports(self, tree) -> list[str]:
         imports: list[str] = []
-
-        def visit(node: Node):
+        stack = [tree.root_node]
+        while stack:
+            node = stack.pop()
             if node.type in self.spec.import_node_types:
                 text = _decode(node.text).strip()
                 if text:
                     imports.append(text)
-                return
-            for child in node.named_children:
-                visit(child)
-
-        visit(tree.root_node)
+                continue
+            stack.extend(reversed(node.named_children))
         return imports
