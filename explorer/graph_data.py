@@ -11,6 +11,14 @@ files. So a single left-to-right pass over `graph['nodes']` guarantees every
 class/function node's immediate parent (found by stripping the last dotted
 segment off its qualified name) has already been assigned an element id by
 the time that node is processed.
+
+That invariant only holds for languages where a member is lexically nested
+inside its owner. Go methods hang off their receiver type, which can be
+declared later in the file, in another file, or not as a struct at all
+(`type headerMatcher map[string]string`); Rust `impl` blocks can target a
+type defined elsewhere (`impl From<Error> for io::Error`). For those, the
+missing scope is synthesized as a placeholder class under its nearest known
+ancestor, and filled in place if the real definition shows up later.
 """
 
 from parsing.resolve import bare_name as _label
@@ -34,6 +42,7 @@ def build_elements(graph: dict, repo_label: str = 'repo') -> list[dict]:
     package_id_by_prefix: dict[str, str] = {}
     id_by_symbol_name: dict[str, str] = {}
     occurrences_by_id: dict[str, int] = {}
+    placeholder_by_name: dict[str, dict] = {}
 
     def make_unique_id(candidate_id: str) -> str:
         count = occurrences_by_id.get(candidate_id, 0) + 1
@@ -61,22 +70,56 @@ def build_elements(graph: dict, repo_label: str = 'repo') -> list[dict]:
             parent_id = pkg_id
         return parent_id
 
+    def ensure_scope(scope_name: str) -> str:
+        # Placeholder for a scope that was never recorded as a symbol of its
+        # own (see module docstring), nested under its nearest known
+        # ancestor - or the repo root if there isn't one.
+        existing = id_by_symbol_name.get(scope_name)
+        if existing is not None:
+            return existing
+        parent_id = ensure_scope(scope_name.rsplit('.', 1)[0]) if '.' in scope_name else 'repo'
+        node_id = make_unique_id(f'sym:{scope_name}')
+        depth_by_id[node_id] = depth_by_id[parent_id] + 1
+        id_by_symbol_name[scope_name] = node_id
+        data = {
+            'id': node_id,
+            'label': _label(scope_name),
+            'kind': 'class',
+            'parent': parent_id,
+            'depth': depth_by_id[node_id],
+            'name': scope_name,
+        }
+        placeholder_by_name[scope_name] = data
+        elements.append({'data': data})
+        return node_id
+
     for node in graph.get('nodes', []):
         kind = node['kind']
         name = node['name']
+
+        placeholder = placeholder_by_name.pop(name, None)
+        if placeholder is not None and kind != 'module':
+            # The real definition arrived after one of its members - fill in
+            # the placeholder rather than adding a second node for it.
+            placeholder.update({
+                'kind': kind,
+                'relative_path': node.get('relative_path'),
+                'docstring': node.get('docstring'),
+                'lineno': node.get('lineno'),
+                'end_lineno': node.get('end_lineno'),
+                'complexity': node.get('complexity'),
+                'loc': node.get('loc'),
+                'fan_in': node.get('fan_in'),
+                'fan_out': node.get('fan_out'),
+            })
+            continue
 
         if kind == 'module':
             parts = name.split('.')
             parent_id = ensure_package_chain(parts[:-1])
             node_id = make_unique_id(f'mod:{name}')
         else:
-            parent_name = name.rsplit('.', 1)[0]
-            parent_id = id_by_symbol_name.get(parent_name)
-            if parent_id is None:
-                # A symbol's enclosing scope is always recorded first (see
-                # module docstring) - this should be unreachable. Fail loudly
-                # rather than silently attaching the node to the wrong parent.
-                raise ValueError(f'no parent found for {kind} {name!r}')
+            parent_id = ensure_scope(name.rsplit('.', 1)[0])
             node_id = make_unique_id(f'sym:{name}')
 
         depth_by_id[node_id] = depth_by_id[parent_id] + 1

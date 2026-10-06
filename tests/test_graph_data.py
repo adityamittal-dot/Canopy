@@ -93,6 +93,59 @@ def test_nested_function_nests_under_enclosing_function_not_module():
     assert inner['data']['depth'] == 3
 
 
+def test_go_method_on_a_non_struct_type_gets_a_placeholder_parent():
+    # `type headerMatcher map[string]string` is never recorded as a class
+    # (only struct/interface type_specs are), but its methods still carry
+    # the receiver in their qualified name.
+    graph = _make_graph([
+        {'kind': 'module', 'name': 'route', 'file': 'route.go'},
+        {'kind': 'function', 'name': 'route.headerMatcher.Match', 'file': 'route.go'},
+    ])
+
+    elements = build_elements(graph)
+
+    receiver = _by_id(elements, 'sym:route.headerMatcher')
+    method = _by_id(elements, 'sym:route.headerMatcher.Match')
+    assert receiver['data']['kind'] == 'class'
+    assert receiver['data']['parent'] == 'mod:route'
+    assert receiver['data']['label'] == 'headerMatcher'
+    assert method['data']['parent'] == 'sym:route.headerMatcher'
+    assert method['data']['depth'] == 3
+
+
+def test_placeholder_is_filled_in_when_the_real_definition_comes_later():
+    # A Go method can be declared above its receiver's struct.
+    graph = _make_graph([
+        {'kind': 'module', 'name': 'uuid', 'file': 'uuid.go'},
+        {'kind': 'function', 'name': 'uuid.UUID.String', 'file': 'uuid.go', 'lineno': 3},
+        {'kind': 'class', 'name': 'uuid.UUID', 'file': 'uuid.go', 'lineno': 10, 'docstring': 'A UUID.'},
+    ])
+
+    elements = build_elements(graph)
+
+    classes = [el for el in elements if el['data'].get('name') == 'uuid.UUID']
+    assert len(classes) == 1
+    assert classes[0]['data']['id'] == 'sym:uuid.UUID'
+    assert classes[0]['data']['lineno'] == 10
+    assert classes[0]['data']['docstring'] == 'A UUID.'
+    assert _by_id(elements, 'sym:uuid.UUID.String')['data']['parent'] == 'sym:uuid.UUID'
+
+
+def test_missing_intermediate_scopes_are_all_synthesized():
+    # Rust `impl From<Error> for io::Error` - neither `io` nor anything
+    # above it was recorded as a symbol in this file.
+    graph = _make_graph([
+        {'kind': 'module', 'name': 'src.error', 'file': 'src/error.rs'},
+        {'kind': 'function', 'name': 'src.error.io.Error.from', 'file': 'src/error.rs'},
+    ])
+
+    elements = build_elements(graph)
+
+    assert _by_id(elements, 'sym:src.error.io')['data']['parent'] == 'mod:src.error'
+    assert _by_id(elements, 'sym:src.error.io.Error')['data']['parent'] == 'sym:src.error.io'
+    assert _by_id(elements, 'sym:src.error.io.Error.from')['data']['parent'] == 'sym:src.error.io.Error'
+
+
 def test_resolved_call_becomes_an_edge_between_symbol_ids():
     graph = _make_graph(
         nodes=[
